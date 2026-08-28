@@ -2,6 +2,23 @@
   <img src="banner.png" alt="pi-web-access" width="1100">
 </p>
 
+# pi-web-access-slim
+
+> Prompt-surface fork of `nicobailon/pi-web-access` based on `v0.25.0`.
+> Agent-visible search tools use the configured/default route and workflow;
+> video analysis, frame extraction, provider enumeration, and per-call browser
+> curation controls are omitted from the tool schemas. Slash commands and the
+> upstream runtime remain available. See [`FORK.md`](FORK.md) for the exact delta.
+
+Install this fork with:
+
+```bash
+pi install git:github.com/2315137135/pi-web-access-slim@slim
+```
+
+The upstream documentation follows for the retained runtime and user-facing
+commands.
+
 # Pi Web Access
 
 **Web search, content extraction, and video understanding for Pi agent. OpenAI/Codex search, zero-config Exa search, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, AnySearch, Valyu, xAI/Grok, Bright Data SERP, SerpBase, Serper, self-hosted SearXNG, keyless DuckDuckGo, optional browser-cookie Gemini Web, Kimi Code Plan search, or bring your own API keys.**

@@ -1,7 +1,7 @@
 {
-  "name": "pi-web-access",
+  "name": "pi-web-access-slim",
   "version": "0.25.0",
-  "description": "Web search, URL fetching, GitHub repo cloning, PDF extraction, YouTube video understanding, and local video analysis for Pi coding agent. Supports OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Ollama, AnySearch, Bright Data SERP, SerpBase, SearXNG, Exa, Perplexity, Gemini, and Kimi.",
+  "description": "Prompt-slim fork of pi-web-access with default-route search, URL fetching, GitHub support, PDF extraction, cached content retrieval, and automatic summaries.",
   "type": "module",
   "scripts": {
     "test": "node --test",
@@ -26,18 +26,17 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nicobailon/pi-web-access.git"
+    "url": "git+https://github.com/2315137135/pi-web-access-slim.git"
   },
   "bugs": {
-    "url": "https://github.com/nicobailon/pi-web-access/issues"
+    "url": "https://github.com/2315137135/pi-web-access-slim/issues"
   },
-  "homepage": "https://github.com/nicobailon/pi-web-access#readme",
+  "homepage": "https://github.com/2315137135/pi-web-access-slim#readme",
   "files": [
     "*.ts",
     "CHANGELOG.md",
     "SECURITY.md",
-    "banner.png",
-    "pi-web-fetch-demo.mp4"
+    "banner.png"
   ],
   "devDependencies": {
     "@types/turndown": "^5.0.6",
@@ -62,7 +61,6 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ],
-    "video": "https://github.com/nicobailon/pi-web-access/raw/refs/heads/main/pi-web-fetch-demo.mp4"
+    ]
   }
 }

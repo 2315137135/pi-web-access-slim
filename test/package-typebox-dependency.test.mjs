@@ -16,7 +16,11 @@ test("packed installs include typebox without peer dependencies", async () => {
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-		const [{ filename, files }] = JSON.parse(packOutput);
+		const parsedPackOutput = JSON.parse(packOutput);
+		const packResult = Array.isArray(parsedPackOutput)
+			? parsedPackOutput[0]
+			: Object.values(parsedPackOutput)[0];
+		const { filename, files } = packResult;
 		const packedFiles = files.map((file) => file.path);
 		assert.ok(packedFiles.includes("index.ts"));
 		assert.ok(packedFiles.includes("CHANGELOG.md"));
@@ -30,8 +34,8 @@ test("packed installs include typebox without peer dependencies", async () => {
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 
-		const packageRequire = createRequire(join(tempDir, "node_modules", "pi-web-access", "package.json"));
-		const installedManifest = packageRequire("pi-web-access/package.json");
+		const packageRequire = createRequire(join(tempDir, "node_modules", "pi-web-access-slim", "package.json"));
+		const installedManifest = packageRequire("pi-web-access-slim/package.json");
 		assert.equal(installedManifest.peerDependencies?.typebox, undefined);
 		assert.match(installedManifest.dependencies?.typebox, /^\^1\./);
 		assert.match(packageRequire.resolve("typebox").replaceAll("\\", "/"), /node_modules\/typebox\//);

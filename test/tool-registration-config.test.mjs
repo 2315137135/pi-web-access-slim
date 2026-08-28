@@ -107,6 +107,21 @@ test("fetch_content schema exposes auth profile opt-in", () => {
 	assert.deepEqual(schema.anyOf.map(option => option.type), ["string", "boolean"]);
 });
 
+test("slim agent schemas omit provider, curator, and video controls", () => {
+	const searchTool = registeredTool({}, "web_search");
+	const sourceCheckTool = registeredTool({}, "source_check");
+	const fetchTool = registeredTool({}, "fetch_content");
+
+	assert.equal(searchTool.parameters.properties.provider, undefined);
+	assert.equal(searchTool.parameters.properties.workflow, undefined);
+	assert.equal(sourceCheckTool.parameters.properties.provider, undefined);
+	for (const name of ["timestamp", "frames", "model"]) {
+		assert.equal(fetchTool.parameters.properties[name], undefined);
+	}
+	assert.doesNotMatch(`${searchTool.description}\n${searchTool.promptSnippet}`, /Gemini|Ollama|provider array|browser curator/i);
+	assert.doesNotMatch(`${fetchTool.description}\n${fetchTool.promptSnippet}`, /YouTube|video|frames|Gemini/i);
+});
+
 test("registered tools do not advertise disabled get_search_content", () => {
 	const fetchTool = registeredTool({ tools: { getSearchContent: { enabled: false } } }, "fetch_content");
 	assert.ok(fetchTool);

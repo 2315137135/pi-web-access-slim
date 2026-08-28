@@ -5,9 +5,9 @@ import { test } from "node:test";
 const indexSrc = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
 const readmeSrc = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 
-test("web_search accepts auto-summary workflow in schema and config resolution", () => {
+test("web_search accepts auto-summary from configuration without advertising workflow overrides", () => {
 	assert.match(indexSrc, /type WebSearchWorkflow = "none" \| "summary-review" \| "auto-summary"/);
-	assert.match(indexSrc, /StringEnum\(\["none", "summary-review", "auto-summary"\]/);
+	assert.doesNotMatch(indexSrc, /workflow: Type\.Optional\(\s*StringEnum\(\["none", "summary-review", "auto-summary"\]/);
 	assert.match(indexSrc, /normalized === "auto-summary"/);
 	assert.match(indexSrc, /arg === "none" \|\| arg === "summary-review" \|\| arg === "auto-summary"/);
 });

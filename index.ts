@@ -9,7 +9,7 @@ import { findContent, type FindMode } from "./content-find.ts";
 import { answerFromPage } from "./page-query.ts";
 import { rewriteSearchQuery } from "./query-rewrite.ts";
 import { clearCloneCache } from "./github-extract.ts";
-import { getConfiguredSearchRouting, normalizeSearchProviderSelection, RESOLVED_SEARCH_PROVIDERS, SEARCH_PROVIDERS, search, type AttributedSearchResponse, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
+import { getConfiguredSearchRouting, normalizeSearchProviderSelection, search, type AttributedSearchResponse, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
 import type { SearchResult } from "./perplexity.ts";
 import { formatSeconds, getWebSearchConfigDir, getWebSearchConfigPath, installGlobalProxyFetch, resolveCuratorNetworkConfig, runWithProxy } from "./utils.ts";
 import {
@@ -257,13 +257,6 @@ const DEFAULT_CURATOR_TIMEOUT_SECONDS = 20;
 const DEFAULT_REMOTE_CURATOR_TIMEOUT_SECONDS = 60;
 const MAX_CURATOR_TIMEOUT_SECONDS = 600;
 const MAX_SUMMARY_GENERATION_DEADLINE_MS = 600_000;
-
-function searchProviderSchema(description: string) {
-	return Type.Union([
-		StringEnum([...SEARCH_PROVIDERS]),
-		Type.Array(StringEnum([...RESOLVED_SEARCH_PROVIDERS]), { minItems: 1 }),
-	], { description });
-}
 
 function isToolEnabled(config: WebSearchConfig, key: keyof ToolNames): boolean {
 	const override = config.tools?.[key]?.enabled;
@@ -1750,9 +1743,9 @@ export default function (pi: ExtensionAPI) {
 		name: toolNames.webSearch,
 		label: "Web Search",
 		description:
-			`Search the web using OpenAI, Brave, Parallel, Parallel MCP, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, SearXNG, DuckDuckGo, Exa, Perplexity, Gemini, Kimi, AnySearch, Valyu, xAI, Bright Data, SerpBase, or Serper. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, Valyu, xAI, Bright Data, SerpBase, and Serper. Returns an AI-synthesized answer with source citations. OpenAI search uses a Codex subscription or OpenAI API key; Kimi search uses a Kimi Code Plan authenticated through /login kimi-coding; xAI search uses a SuperGrok/X Premium subscription or xAI API key. Parallel MCP, DuckDuckGo, Kimi, AnySearch, Valyu, xAI, Bright Data, SerpBase, and Serper are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, SearXNG is preferred first for local/private search. When the active Pi model is openai-codex, Codex-backed OpenAI search is preferred next. Otherwise Exa is preferred before OpenAI, then Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, Perplexity, Gemini API, or Gemini Web.`,
+			"Search the web through the configured default route. Supports single or multiple queries, result limits, recency and domain filters, optional background page retrieval, and the configured automatic summary workflow.",
 		promptSnippet:
-			"Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage. Omit provider unless explicitly overriding the configured default.",
+			"Search the web through the configured default route; use 2-4 varied queries when broader research is needed.",
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
 			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
@@ -1762,25 +1755,22 @@ export default function (pi: ExtensionAPI) {
 				StringEnum(["day", "week", "month", "year"], { description: "Filter by recency" }),
 			),
 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude)" })),
-			provider: Type.Optional(searchProviderSchema("Search provider or non-empty list of providers to search simultaneously; use all to search every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, Valyu, xAI, Bright Data, SerpBase, and Serper, omit this field to use the configured provider, or use auto when none is configured")),
-			workflow: Type.Optional(
-				StringEnum(["none", "summary-review", "auto-summary"], {
-					description: "Search workflow mode: none = no curator, summary-review = open curator with auto summary draft (default), auto-summary = generate summary without opening curator",
-				}),
-			),
 			proxy: Type.Optional(Type.String({
 				description: "http(s) proxy URL (e.g. http://host:port) used for every outbound request in this call (search APIs and content fetches). Node fetch ignores HTTP(S)_PROXY env vars, so set this (or `proxy` in web-search.json) when direct access is blocked; empty string forces direct access.",
 			})),
 		}),
 
 		async execute(callId, params, signal, onUpdate, ctx) {
+			// Published v0.25.0 sessions may still contain these arguments. Keep them
+			// readable for resume compatibility without advertising them to new agents.
+			const legacyParams = params as typeof params & { provider?: unknown; workflow?: unknown };
 			return runWithProxy(typeof params.proxy === "string" ? params.proxy : undefined, async () => {
 				const rawQueryList: unknown[] = Array.isArray(params.queries)
 					? params.queries
 					: (params.query !== undefined ? [params.query] : []);
 				const queryList = normalizeQueryList(rawQueryList);
 				const configWorkflow = loadConfigForExtensionInit().workflow;
-				const workflow = resolveWorkflow(params.workflow ?? configWorkflow, ctx?.hasUI !== false);
+				const workflow = resolveWorkflow(legacyParams.workflow ?? configWorkflow, ctx?.hasUI !== false);
 				const shouldCurate = workflow === "summary-review";
 				const recencyFilter = normalizeRecencyFilter(params.recencyFilter);
 
@@ -1816,7 +1806,7 @@ export default function (pi: ExtensionAPI) {
 					: searchAbort.signal;
 				let cancelled = false;
 
-				const requestedProvider = resolveRequestedProvider(params.provider);
+				const requestedProvider = resolveRequestedProvider(legacyParams.provider);
 				const bootstrap = await loadCuratorBootstrap(requestedProvider, ctx, {
 					numResults: params.numResults,
 					recencyFilter,
@@ -1986,7 +1976,7 @@ export default function (pi: ExtensionAPI) {
 			const searchResults: QueryResultData[] = [];
 			const allUrls: string[] = [];
 			const allInlineContent: ExtractedContent[] = [];
-			const resolvedProvider = resolveRequestedProvider(params.provider);
+			const resolvedProvider = resolveRequestedProvider(legacyParams.provider);
 
 			for (let i = 0; i < queryList.length; i++) {
 				const query = queryList[i];
@@ -2337,12 +2327,12 @@ export default function (pi: ExtensionAPI) {
 			fetchContent: Type.Optional(Type.Boolean({ description: "Fetch up to 5 result pages for exact passage extraction." })),
 			recencyFilter: Type.Optional(StringEnum(["day", "week", "month", "year"], { description: "Filter by recency." })),
 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains; prefix with - to exclude." })),
-			provider: Type.Optional(searchProviderSchema("Search provider or non-empty list of providers to search simultaneously; all searches every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, Valyu, xAI, Bright Data, SerpBase, and Serper")),
 			proxy: Type.Optional(Type.String({
 				description: "http(s) proxy URL (e.g. http://host:port) used for every outbound request in this call (search APIs and result-page fetches). Empty string forces direct access.",
 			})),
 		}),
 		async execute(_callId, params, signal, _onUpdate, ctx) {
+			const legacyParams = params as typeof params & { provider?: unknown };
 			return runWithProxy(typeof params.proxy === "string" ? params.proxy : undefined, async () => {
 				const claim = typeof params.claim === "string" ? params.claim.trim() : "";
 				if (!claim) {
@@ -2369,7 +2359,7 @@ export default function (pi: ExtensionAPI) {
 					if (signal?.aborted) break;
 					try {
 						const response = await search(query, {
-							provider: resolveRequestedProvider(params.provider),
+							provider: resolveRequestedProvider(legacyParams.provider),
 							numResults,
 							recencyFilter,
 							domainFilter,
@@ -2427,9 +2417,9 @@ export default function (pi: ExtensionAPI) {
 	if (fetchContentEnabled) pi.registerTool({
 		name: toolNames.fetchContent,
 		label: "Fetch Content",
-		description: `Fetch URL(s) and extract readable content as markdown. Use mode "raw" for exact textual HTTP response bodies or mode "answer" with prompt to answer using only fetched content. Direct image URLs return resized image content. Supports YouTube transcripts, GitHub repositories, PDFs, and local videos. ${fetchContentStorageNote}`,
+		description: `Fetch URL(s) as readable Markdown or exact textual HTTP bodies. Mode "answer" answers a page-local question using only fetched content. Supports web pages, direct images, GitHub repositories, pull requests, issues, and PDFs. ${fetchContentStorageNote}`,
 		promptSnippet:
-			"Use to fetch readable or raw URL content, direct images, GitHub repos, and videos. Mode answer answers a prompt using only the fetched source.",
+			"Fetch web pages, direct images, GitHub resources, and PDFs; mode answer handles page-local questions.",
 		parameters: Type.Object({
 			url: Type.Optional(Type.String({ description: "Single URL to fetch" })),
 			urls: Type.Optional(Type.Array(Type.String(), { description: "Multiple URLs (parallel)" })),
@@ -2437,24 +2427,13 @@ export default function (pi: ExtensionAPI) {
 				description: "Force cloning large GitHub repositories that exceed the size threshold",
 			})),
 			prompt: Type.Optional(Type.String({
-				description: "Question or instruction for video analysis, or the page-local question required by mode answer.",
+				description: "Page-local question required by mode answer.",
 			})),
 			mode: Type.Optional(StringEnum(["readable", "raw", "answer"], {
 				description: "Fetch mode: readable (default extraction), raw (exact textual HTTP body), or answer (answer prompt using only fetched content).",
 			})),
 			answerModel: Type.Optional(Type.String({
 				description: "Optional provider/model-id override for mode answer. Defaults to the current Pi model.",
-			})),
-			timestamp: Type.Optional(Type.String({
-				description: "Extract video frame(s) at a timestamp or time range. Single: '1:23:45', '23:45', or '85' (seconds). Range: '23:41-25:00' extracts evenly-spaced frames across that span (default 6). Use frames with ranges to control density; single+frames uses a fixed 5s interval. YouTube requires yt-dlp + ffmpeg; local videos require ffmpeg. Use a range when you know the approximate area but not the exact moment — you'll get a contact sheet to visually identify the right frame.",
-			})),
-			frames: Type.Optional(Type.Integer({
-				minimum: 1,
-				maximum: 12,
-				description: "Number of frames to extract. Use with timestamp range for custom density, with single timestamp to get N frames at 5s intervals, or alone to sample across the entire video. Requires yt-dlp + ffmpeg for YouTube, ffmpeg for local video.",
-			})),
-			model: Type.Optional(Type.String({
-				description: "Override the Gemini model for video/YouTube analysis (e.g. 'gemini-3.6-flash'). Defaults to config or gemini-3.6-flash.",
 			})),
 			auth: Type.Optional(Type.Union([Type.String(), Type.Boolean()], {
 				description: "Opt into an authFetch profile for local browser-cookie fetching. Use a profile name, or true only when exactly one profile exists.",
@@ -2478,14 +2457,11 @@ export default function (pi: ExtensionAPI) {
 				if (mode === "answer" && !options.prompt) {
 					return { content: [{ type: "text", text: "Error: mode answer requires prompt." }], details: { error: "mode answer requires prompt" } };
 				}
-				if (mode === "raw" && (options.forceClone === true || options.timestamp || options.frames || options.prompt || options.model || options.answerModel)) {
-					return { content: [{ type: "text", text: "Error: mode raw cannot be combined with forceClone, prompt, timestamp, frames, model, or answerModel." }], details: { error: "Incompatible raw mode options" } };
+				if (mode === "raw" && (options.forceClone === true || options.prompt || options.answerModel)) {
+					return { content: [{ type: "text", text: "Error: mode raw cannot be combined with forceClone, prompt, or answerModel." }], details: { error: "Incompatible raw mode options" } };
 				}
 				if (mode !== "answer" && options.answerModel) {
 					return { content: [{ type: "text", text: "Error: answerModel requires mode answer." }], details: { error: "answerModel requires mode answer" } };
-				}
-				if (mode === "answer" && options.model) {
-					return { content: [{ type: "text", text: "Error: use answerModel, not model, with mode answer." }], details: { error: "model is incompatible with mode answer" } };
 				}
 				if (mode === "answer" && options.auth !== undefined) {
 					return { content: [{ type: "text", text: "Error: auth cannot be combined with mode answer." }], details: { error: "auth cannot be combined with mode answer" } };
@@ -2555,7 +2531,7 @@ export default function (pi: ExtensionAPI) {
 					if (result.error) {
 						return {
 							content: [{ type: "text", text: `Error: ${result.error}` }],
-							details: { urls: urlList, urlCount: 1, successful: 0, error: result.error, ...(storedContent ? { responseId } : {}), prompt: params.prompt, timestamp: params.timestamp, frames: params.frames },
+							details: { urls: urlList, urlCount: 1, successful: 0, error: result.error, ...(storedContent ? { responseId } : {}), prompt: params.prompt },
 						};
 					}
 
@@ -2598,8 +2574,6 @@ export default function (pi: ExtensionAPI) {
 							hasImage: imageCount > 0,
 							imageCount,
 							prompt: params.prompt,
-							timestamp: params.timestamp,
-							frames: params.frames,
 							duration: result.duration,
 							mode,
 							mimeType: result.mimeType,
@@ -2635,7 +2609,7 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme) {
 			const { urlList, options } = normalizeFetchContentParams(args);
-			const { prompt, timestamp, frames, model, mode, answerModel, auth } = options;
+			const { prompt, mode, answerModel, auth } = options;
 			if (urlList.length === 0) {
 				return new Text(theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("error", "(no URL)"), 0, 0);
 			}
@@ -2656,18 +2630,9 @@ export default function (pi: ExtensionAPI) {
 			if (mode && mode !== "readable") {
 				lines.push(theme.fg("dim", "  mode: ") + theme.fg("warning", mode));
 			}
-			if (timestamp) {
-				lines.push(theme.fg("dim", "  timestamp: ") + theme.fg("warning", timestamp));
-			}
-			if (typeof frames === "number") {
-				lines.push(theme.fg("dim", "  frames: ") + theme.fg("warning", String(frames)));
-			}
 			if (prompt) {
 				const display = prompt.length > 250 ? prompt.slice(0, 247) + "..." : prompt;
 				lines.push(theme.fg("dim", "  prompt: ") + theme.fg("muted", `"${display}"`));
-			}
-			if (model) {
-				lines.push(theme.fg("dim", "  model: ") + theme.fg("warning", model));
 			}
 			if (answerModel) {
 				lines.push(theme.fg("dim", "  answer model: ") + theme.fg("warning", answerModel));
@@ -2692,8 +2657,6 @@ export default function (pi: ExtensionAPI) {
 				hasImage?: boolean;
 				imageCount?: number;
 				prompt?: string;
-				timestamp?: string;
-				frames?: number;
 				duration?: number;
 			};
 
@@ -2743,12 +2706,6 @@ export default function (pi: ExtensionAPI) {
 				if (details?.prompt) {
 					const display = details.prompt.length > 250 ? details.prompt.slice(0, 247) + "..." : details.prompt;
 					lines.push(theme.fg("dim", `  prompt: "${display}"`));
-				}
-				if (details?.timestamp) {
-					lines.push(theme.fg("dim", `  timestamp: ${details.timestamp}`));
-				}
-				if (typeof details?.frames === "number") {
-					lines.push(theme.fg("dim", `  frames: ${details.frames}`));
 				}
 				const preview = textContent.length > 500 ? textContent.slice(0, 500) + "..." : textContent;
 				lines.push(theme.fg("dim", preview));
