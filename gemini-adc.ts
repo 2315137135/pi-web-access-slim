@@ -3,7 +3,7 @@ import { createSign } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getWebSearchConfigPath } from "./utils.ts";
-import { redactCredential, CredentialResolutionError } from "./credential-source.ts";
+import { CredentialResolutionError } from "./credential-source.ts";
 
 const CONFIG_PATH = getWebSearchConfigPath();
 const DEFAULT_ADC_PATH = join(homedir(), ".config", "gcloud", "application_default_credentials.json");
@@ -293,6 +293,3 @@ function hasExplicitApiBase(): boolean {
 	return typeof configured === "string" && configured.trim().length > 0;
 }
 
-export function redactAdcToken(text: string): string {
-	return cachedToken ? redactCredential(text, cachedToken.token) : text;
-}

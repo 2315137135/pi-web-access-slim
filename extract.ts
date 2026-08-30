@@ -52,10 +52,6 @@ async function extractWithDefuddle(text: string, url: string): Promise<{ title: 
 
 export { loadSsrfConfig } from "./ssrf-protection.ts";
 
-export function loadSsrfAllowRanges(): string[] {
-	return loadSsrfConfig().allowRanges;
-}
-
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }

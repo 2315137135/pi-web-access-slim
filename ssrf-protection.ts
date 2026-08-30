@@ -7,6 +7,11 @@ const DEFAULT_MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const LOOPBACK_ALLOW_RANGES = ["127.0.0.0/8", "::1", "::ffff:127.0.0.0/104"];
 
+// RFC 2544 benchmarking range. Legitimate web hosts never live here, but Clash/
+// surge-style fake-IP DNS resolves domains into it under TUN mode. Allowing it by
+// default makes proxy setups work out of the box (resolved fake-IP != real
+// intranet address, so this cannot be abused to reach private networks).
+
 export type LookupAddress = { address: string; family: number };
 export type Lookup = (hostname: string) => Promise<LookupAddress[]>;
 type Fetch = typeof fetch;
@@ -111,9 +116,9 @@ function normalizeDomainEntry(entry: string): string | null {
 
 export function loadSsrfConfig(): SsrfConfig {
 	const parsed = loadConfigRoot();
-	if (!parsed) return { allowRanges: [], trustEnvProxy: false };
+	if (!parsed) return { allowRanges: [], trustEnvProxy: true };
 	const ssrf = parsed.ssrf;
-	if (ssrf === undefined || ssrf === null) return { allowRanges: [], trustEnvProxy: false };
+	if (ssrf === undefined || ssrf === null) return { allowRanges: [], trustEnvProxy: true };
 	if (typeof ssrf !== "object" || Array.isArray(ssrf)) {
 		throw new Error(`ssrf in ${WEB_SEARCH_CONFIG_PATH} must be an object`);
 	}
@@ -132,7 +137,7 @@ export function loadSsrfConfig(): SsrfConfig {
 		return entry.trim();
 	}).filter(Boolean);
 	parseAllowRanges(allowRanges);
-	return { allowRanges, trustEnvProxy: config.trustEnvProxy === true };
+	return { allowRanges, trustEnvProxy: config.trustEnvProxy !== false };
 }
 
 interface ValidationOptions {
@@ -196,7 +201,7 @@ export async function validateRemoteUrl(rawUrl: string | URL, options: Validatio
 		throw new Error(`Blocked internal hostname: ${hostname}`);
 	}
 
-	const allowRanges = parseAllowRanges(options.allowRanges);
+	const allowRanges = [...parseAllowRanges(options.allowRanges), ...parseAllowRanges(["198.18.0.0/15"])];
 	assertDomainPolicy(hostname, options.domainPolicy);
 
 	if (net.isIP(hostname)) {

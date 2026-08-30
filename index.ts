@@ -1,5 +1,7 @@
+import { getSelectListTheme, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Text, truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
+import { Container, type SelectItem, type SettingItem, SettingsList, SelectList, Text } from "@earendil-works/pi-tui";
+import { Box, truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { StringEnum, type ImageContent, type TextContent } from "@earendil-works/pi-ai/compat";
 import type { ExtractedContent, ExtractOptions } from "./extract.ts";
@@ -9,7 +11,7 @@ import { findContent, type FindMode } from "./content-find.ts";
 import { answerFromPage } from "./page-query.ts";
 import { rewriteSearchQuery } from "./query-rewrite.ts";
 import { clearCloneCache } from "./github-extract.ts";
-import { getConfiguredSearchRouting, normalizeSearchProviderSelection, search, type AttributedSearchResponse, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
+import { getConfiguredSearchRouting, normalizeSearchProviderSelection, RESOLVED_SEARCH_PROVIDERS, search, type AttributedSearchResponse, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
 import type { SearchResult } from "./perplexity.ts";
 import { formatSeconds, getWebSearchConfigDir, getWebSearchConfigPath, installGlobalProxyFetch, resolveCuratorNetworkConfig, runWithProxy } from "./utils.ts";
 import {
@@ -42,7 +44,7 @@ import { join } from "node:path";
 import { isPerplexityAvailable } from "./perplexity.ts";
 import { isExaAvailable } from "./exa.ts";
 import { isGeminiApiAvailable } from "./gemini-api.ts";
-import { getActiveGoogleEmail, getGeminiWebAvailabilityDiagnostic, getGeminiWebAvailabilityDiagnosticDetails, isGeminiWebAvailable } from "./gemini-web.ts";
+import { getActiveGoogleEmail, getGeminiWebAvailabilityDiagnostic, isGeminiWebAvailable } from "./gemini-web.ts";
 import { isBrowserCookieAccessAllowed } from "./gemini-web-config.ts";
 import { isBraveAvailable } from "./brave.ts";
 import { isCurrentModelHostedSearchEligible, isOpenAISearchAvailable } from "./openai-search.ts";
@@ -70,14 +72,8 @@ import { isSerperAvailable } from "./serper.ts";
 import { isValyuAvailable } from "./valyu.ts";
 import { buildSearchErrorPlan, type SearchErrorDetails, type SearchErrorPlan } from "./render-search-error.ts";
 import { findModelWithProviderRouting, loadEnabledModelPatterns, modelMatchesEnabledPatterns, splitThinkingSuffix } from "./summary-model-scope.ts";
-import {
-	buildResearchArtifact,
-	withClaimAssessment,
-	storeResearchArtifact,
-	getResearchArtifact,
-	type RecencyFilter,
-	type ResearchArtifact,
-} from "./source-check.ts";
+
+type RecencyFilter = "day" | "week" | "month" | "year";
 
 type ExtensionTheme = ExtensionContext["ui"]["theme"];
 
@@ -129,13 +125,27 @@ function renderSearchErrorPlan(plan: SearchErrorPlan, expanded: boolean, theme: 
 
 interface WebSearchConfig {
 	anysearchApiKey?: unknown;
+	bochaApiKey?: unknown;
 	brightdataApiKey?: unknown;
 	brightdataSerpZone?: unknown;
+	exaApiKey?: unknown;
+	firecrawlBaseUrl?: unknown;
+	geminiApiKey?: unknown;
+	jinaApiKey?: unknown;
 	kagiApiKey?: unknown;
 	ollamaApiKey?: unknown;
+	openaiApiKey?: unknown;
+	parallelApiKey?: unknown;
+	perplexityApiKey?: unknown;
+	queritApiKey?: unknown;
+	searxngBaseUrl?: unknown;
+	search1apiApiKey?: unknown;
+	searchinfinityApiKey?: unknown;
 	serpbaseApiKey?: unknown;
+	serpdiveApiKey?: unknown;
 	serperApiKey?: unknown;
 	tinyfishApiKey?: unknown;
+	tavilyApiKey?: unknown;
 	valyuApiKey?: unknown;
 	xaiApiKey?: unknown;
 	provider?: unknown;
@@ -151,7 +161,7 @@ interface WebSearchConfig {
 		enabled?: boolean;
 	};
 	tools?: Partial<Record<keyof ToolNames, { enabled?: boolean }>>;
-	commands?: Partial<Record<"websearch" | "curator" | "search" | "google-account", { enabled?: boolean }>>;
+	commands?: Partial<Record<"curator" | "search" | "auth", { enabled?: boolean }>>;
 	toolNames?: Partial<ToolNames>;
 	shortcuts?: {
 		curate?: KeyId;
@@ -226,7 +236,7 @@ function loadConfig(): WebSearchConfig {
 	return parseConfigRoot(readFileSync(WEB_SEARCH_CONFIG_PATH, "utf-8")) as WebSearchConfig;
 }
 
-function saveConfig(updates: Partial<WebSearchConfig>): void {
+function saveConfig(updates: Partial<WebSearchConfig> & Record<string, unknown>): void {
 	let config: Record<string, unknown> = {};
 	if (existsSync(WEB_SEARCH_CONFIG_PATH)) {
 		config = parseConfigRoot(readFileSync(WEB_SEARCH_CONFIG_PATH, "utf-8"));
@@ -240,18 +250,46 @@ function saveConfig(updates: Partial<WebSearchConfig>): void {
 
 type ToolNames = {
 	webSearch: string;
-	sourceCheck: string;
 	fetchContent: string;
 	getSearchContent: string;
 };
 
 const DEFAULT_TOOL_NAMES: ToolNames = {
 	webSearch: "web_search",
-	sourceCheck: "source_check",
 	fetchContent: "fetch_content",
 	getSearchContent: "get_search_content",
 };
 const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+// is*Available() 恒真的供应商：无需 key 即可用（exa 无 key 时降级 Exa MCP）
+const FREE_PROVIDERS: ReadonlySet<string> = new Set(["duckduckgo", "anysearch", "parallel-mcp", "exa"]);
+
+// 未配置供应商的交互式设置入口：选中 ✗ 供应商时弹输入框，写入对应 json 字段
+// configKey 必须与各供应商模块 loadConfig() 读取的字段同名
+const PROVIDER_SETUP: Record<string, { configKey: string; kind: "api-key" | "base-url"; hint: string }> = {
+	openai: { configKey: "openaiApiKey", kind: "api-key", hint: "pi 已登录 OpenAI 时自动可用；也可设环境变量 OPENAI_API_KEY" },
+	brave: { configKey: "braveApiKey", kind: "api-key", hint: "免费 tier: brave.com/search/api • 或环境变量 BRAVE_API_KEY" },
+	parallel: { configKey: "parallelApiKey", kind: "api-key", hint: "或环境变量 PARALLEL_API_KEY" },
+	tinyfish: { configKey: "tinyfishApiKey", kind: "api-key", hint: "或环境变量 TINYFISH_API_KEY" },
+	search1api: { configKey: "search1apiApiKey", kind: "api-key", hint: "或环境变量 SEARCH1API_KEY" },
+	searchinfinity: { configKey: "searchinfinityApiKey", kind: "api-key", hint: "或环境变量 SEARCHINFINITY_API_KEY" },
+	querit: { configKey: "queritApiKey", kind: "api-key", hint: "或环境变量 QUERIT_API_KEY" },
+	tavily: { configKey: "tavilyApiKey", kind: "api-key", hint: "或环境变量 TAVILY_API_KEY" },
+	firecrawl: { configKey: "firecrawlBaseUrl", kind: "base-url", hint: "自托管 Firecrawl 地址，如 https://firecrawl.example.com（或环境变量 FIRECRAWL_BASE_URL）" },
+	jina: { configKey: "jinaApiKey", kind: "api-key", hint: "或环境变量 JINA_API_KEY" },
+	searxng: { configKey: "searxngBaseUrl", kind: "base-url", hint: "SearXNG 实例地址，如 http://localhost:8080（或环境变量 SEARXNG_BASE_URL）" },
+	perplexity: { configKey: "perplexityApiKey", kind: "api-key", hint: "或环境变量 PERPLEXITY_API_KEY" },
+	gemini: { configKey: "geminiApiKey", kind: "api-key", hint: "也可登录 gemini.google.com（浏览器 Cookie）或配置 gcloud ADC" },
+	exa: { configKey: "exaApiKey", kind: "api-key", hint: "或环境变量 EXA_API_KEY" },
+	serpdive: { configKey: "serpdiveApiKey", kind: "api-key", hint: "或环境变量 SERPDIVE_API_KEY" },
+	kagi: { configKey: "kagiApiKey", kind: "api-key", hint: "或环境变量 KAGI_API_KEY" },
+	ollama: { configKey: "ollamaApiKey", kind: "api-key", hint: "或环境变量 OLLAMA_API_KEY" },
+	xai: { configKey: "xaiApiKey", kind: "api-key", hint: "也可通过 pi 登录的 xAI 模型授权；或环境变量 XAI_API_KEY" },
+	brightdata: { configKey: "brightdataApiKey", kind: "api-key", hint: "或环境变量 BRIGHTDATA_API_KEY" },
+	serpbase: { configKey: "serpbaseApiKey", kind: "api-key", hint: "或环境变量 SERPBASE_API_KEY" },
+	serper: { configKey: "serperApiKey", kind: "api-key", hint: "或环境变量 SERPER_API_KEY" },
+	valyu: { configKey: "valyuApiKey", kind: "api-key", hint: "或环境变量 VALYU_API_KEY" },
+	bocha: { configKey: "bochaApiKey", kind: "api-key", hint: "或环境变量 BOCHA_API_KEY" },
+};
 const DEFAULT_SHORTCUTS = { curate: "ctrl+shift+s", activity: "ctrl+shift+w" } satisfies Record<string, KeyId>;
 const DEFAULT_CURATOR_TIMEOUT_SECONDS = 20;
 const DEFAULT_REMOTE_CURATOR_TIMEOUT_SECONDS = 60;
@@ -261,10 +299,10 @@ const MAX_SUMMARY_GENERATION_DEADLINE_MS = 600_000;
 function isToolEnabled(config: WebSearchConfig, key: keyof ToolNames): boolean {
 	const override = config.tools?.[key]?.enabled;
 	if (typeof override === "boolean") return override;
-	return key !== "webSearch" && key !== "sourceCheck" || config.webSearch?.enabled !== false;
+	return key !== "webSearch" || config.webSearch?.enabled !== false;
 }
 
-function isCommandEnabled(config: WebSearchConfig, name: "websearch" | "curator" | "search" | "google-account"): boolean {
+function isCommandEnabled(config: WebSearchConfig, name: "curator" | "search" | "auth"): boolean {
 	return config.commands?.[name]?.enabled !== false;
 }
 
@@ -719,28 +757,6 @@ function formatSearchSummary(results: SearchResult[], answer: string): string {
 	return output;
 }
 
-function formatSourceCheckResult(artifact: ResearchArtifact, getSearchContentTool: string | null = DEFAULT_TOOL_NAMES.getSearchContent): string {
-	const assessment = artifact.claims?.[0];
-	const lines = [`# Source check: ${artifact.query}`, ""];
-	if (assessment) {
-		lines.push(`**Status:** ${assessment.status} (confidence ${assessment.confidence.toFixed(2)})`);
-		lines.push(`**Rationale:** ${assessment.rationale}`);
-		if (assessment.supporting_passages.length > 0) lines.push(`**Supporting passages:** ${assessment.supporting_passages.join(", ")}`);
-		if (assessment.contradicting_passages.length > 0) lines.push(`**Contradicting passages:** ${assessment.contradicting_passages.join(", ")}`);
-		lines.push("");
-	}
-	if (artifact.sources.length > 0) {
-		lines.push("## Sources");
-		for (const source of artifact.sources) lines.push(`${source.rank}. [${source.quality}] ${source.title}\n   ${source.url}`);
-		lines.push("");
-	}
-	if (artifact.errors?.length) lines.push(`Search errors: ${artifact.errors.map((entry) => `${entry.query}: ${entry.error}`).join("; ")}`);
-	lines.push(getSearchContentTool
-		? `Artifact responseId: ${artifact.id} (retrievable via ${getSearchContentTool}).`
-		: `Artifact responseId: ${artifact.id}. Content retrieval is not registered.`);
-	return lines.join("\n");
-}
-
 function duplicateQuerySet(results: QueryResultData[]): Set<string> {
 	const counts = new Map<string, number>();
 	for (const result of results) {
@@ -1034,7 +1050,6 @@ export default function (pi: ExtensionAPI) {
 	installGlobalProxyFetch();
 	const toolNames = resolveToolNames(initConfig);
 	const webSearchEnabled = isToolEnabled(initConfig, "webSearch");
-	const sourceCheckEnabled = isToolEnabled(initConfig, "sourceCheck");
 	const fetchContentEnabled = isToolEnabled(initConfig, "fetchContent");
 	const getSearchContentEnabled = isToolEnabled(initConfig, "getSearchContent");
 	// Names as registered this session, so fetch failure guidance never points
@@ -1045,7 +1060,6 @@ export default function (pi: ExtensionAPI) {
 	};
 	const storedContentSources = joinToolNames([
 		...(webSearchEnabled ? [toolNames.webSearch] : []),
-		...(sourceCheckEnabled ? [toolNames.sourceCheck] : []),
 		...(fetchContentEnabled ? [toolNames.fetchContent] : []),
 	]);
 	const searchQueryDescription = webSearchEnabled
@@ -2315,104 +2329,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	if (sourceCheckEnabled) pi.registerTool({
-		name: toolNames.sourceCheck,
-		label: "Source Check",
-		description: "Check a claim against web sources and return a bounded machine-readable research artifact with exact passage citations.",
-		promptSnippet: "Verify a claim with structured source evidence and passage-level citations.",
-		parameters: Type.Object({
-			claim: Type.String({ description: "The assertion to check against web sources." }),
-			queries: Type.Optional(Type.Array(Type.String(), { description: "Search queries (default: the claim)." })),
-			numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Results per query (default: 5, max: 20)." })),
-			fetchContent: Type.Optional(Type.Boolean({ description: "Fetch up to 5 result pages for exact passage extraction." })),
-			recencyFilter: Type.Optional(StringEnum(["day", "week", "month", "year"], { description: "Filter by recency." })),
-			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains; prefix with - to exclude." })),
-			proxy: Type.Optional(Type.String({
-				description: "http(s) proxy URL (e.g. http://host:port) used for every outbound request in this call (search APIs and result-page fetches). Empty string forces direct access.",
-			})),
-		}),
-		async execute(_callId, params, signal, _onUpdate, ctx) {
-			const legacyParams = params as typeof params & { provider?: unknown };
-			return runWithProxy(typeof params.proxy === "string" ? params.proxy : undefined, async () => {
-				const claim = typeof params.claim === "string" ? params.claim.trim() : "";
-				if (!claim) {
-					return { content: [{ type: "text", text: "Error: 'claim' is required." }], details: { error: "Missing claim" } };
-				}
-
-				const requestedQueries = Array.isArray(params.queries)
-					? params.queries.filter((query): query is string => typeof query === "string").map((query) => query.trim()).filter(Boolean)
-					: [];
-				const queries = (requestedQueries.length > 0 ? requestedQueries : [claim]).slice(0, 8);
-				const numResults = typeof params.numResults === "number" && Number.isFinite(params.numResults)
-					? Math.min(20, Math.max(1, Math.floor(params.numResults)))
-					: 5;
-				const domainFilter = Array.isArray(params.domainFilter)
-					? params.domainFilter.filter((domain): domain is string => typeof domain === "string")
-					: undefined;
-				const recencyFilter = normalizeRecencyFilter(params.recencyFilter);
-				const resultsByUrl = new Map<string, SearchResult>();
-				const summaries: string[] = [];
-				const errors: Array<{ query: string; error: string }> = [];
-				let provider: string | undefined;
-
-				for (const query of queries) {
-					if (signal?.aborted) break;
-					try {
-						const response = await search(query, {
-							provider: resolveRequestedProvider(legacyParams.provider),
-							numResults,
-							recencyFilter,
-							domainFilter,
-							signal,
-							extensionContext: ctx,
-						});
-						if (signal?.aborted) break;
-						provider ??= response.provider;
-						if (response.answer) summaries.push(`${query}: ${response.answer}`);
-						for (const result of response.results) {
-							if (!resultsByUrl.has(result.url)) resultsByUrl.set(result.url, result);
-						}
-					} catch (err) {
-						if (signal?.aborted || isAbortError(err)) break;
-						errors.push({ query, error: err instanceof Error ? err.message : String(err) });
-					}
-				}
-
-				const results = [...resultsByUrl.values()].slice(0, 20).map((result, index) => ({ ...result, rank: index + 1 }));
-				let fetched: ExtractedContent[] = [];
-				if (params.fetchContent && results.length > 0) {
-					const urls = results.slice(0, 5).map((result) => result.url);
-					try {
-						fetched = await fetchAllContent(urls, signal, withRegisteredFetchOptions(undefined, registeredToolNames, typeof params.proxy === "string" ? params.proxy : undefined));
-					} catch (err) {
-						if (signal?.aborted || isAbortError(err)) throw err;
-						fetched = urls.map((url) => ({ url, title: "", content: "", error: err instanceof Error ? err.message : String(err) }));
-					}
-				}
-				const artifact = withClaimAssessment(buildResearchArtifact({
-					query: claim,
-					provider,
-					summary: summaries.length > 0 ? summaries.join("\n\n") : undefined,
-					results,
-					fetched,
-					recency: recencyFilter,
-					domainFilter,
-				}), [claim]);
-				if (errors.length > 0) artifact.errors = errors;
-				storeResearchArtifact(artifact);
-				pi.appendEntry("web-search-results", {
-					id: artifact.id,
-					type: "research",
-					timestamp: artifact.timestamp,
-					artifact,
-				});
-				return {
-					content: [{ type: "text", text: formatSourceCheckResult(artifact, getSearchContentEnabled ? toolNames.getSearchContent : null) }],
-					details: { responseId: artifact.id, artifact, sourceCount: artifact.sources.length, passageCount: artifact.passages.length },
-				};
-			});
-		},
-	});
 
 	if (fetchContentEnabled) pi.registerTool({
 		name: toolNames.fetchContent,
@@ -2762,60 +2678,6 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			if (data.type === "research") {
-				const artifact = getResearchArtifact(params.responseId);
-				if (!artifact) {
-					return {
-						content: [{ type: "text", text: `Error: stored research artifact for responseId ${formatInputValue(params.responseId)} was not found. Use a responseId returned by ${storedContentSources}.` }],
-						details: { error: "Artifact not found", responseId: params.responseId },
-					};
-				}
-				const serialized = JSON.stringify(artifact, null, 2);
-				if (params.findText !== undefined) {
-					try {
-						const found = findContent(serialized, normalizeFindQueries(params.findText), params.findMode ?? "case-insensitive");
-						const { text, ...findDetails } = found;
-						return {
-							content: [{ type: "text", text }],
-							details: { responseId: artifact.id, type: "research", contentLength: serialized.length, findMode: params.findMode ?? "case-insensitive", ...findDetails },
-						};
-					} catch (err) {
-						const error = err instanceof Error ? err.message : String(err);
-						return {
-							content: [{ type: "text", text: `Unable to find ${formatInputValue(params.findText)} in research artifact for responseId ${formatInputValue(params.responseId)}: ${error}. Check findText and use a supported findMode.` }],
-							details: { error, responseId: params.responseId, type: "research" },
-						};
-					}
-				}
-				const offset = params.offset ?? 0;
-				const limit = params.limit ?? maxInlineContentChars;
-				if (!Number.isInteger(offset) || offset < 0) {
-					return {
-						content: [{ type: "text", text: `Invalid offset: received ${formatInputValue(offset)} for responseId ${formatInputValue(params.responseId)}; offset must be a non-negative integer. Use 0 or a larger integer.` }],
-						details: { error: "Invalid offset", offset },
-					};
-				}
-				if (!Number.isInteger(limit) || limit <= 0 || limit > maxInlineContentChars) {
-					return {
-						content: [{ type: "text", text: `Invalid limit: received ${formatInputValue(limit)} for responseId ${formatInputValue(params.responseId)}; limit must be an integer from 1 to ${maxInlineContentChars}. Use a value in that range.` }],
-						details: { error: "Invalid limit", limit, maxLimit: maxInlineContentChars },
-					};
-				}
-				if (offset > serialized.length) {
-					return {
-						content: [{ type: "text", text: `Offset ${offset} is out of range for responseId ${formatInputValue(params.responseId)}. Received offset ${offset}; valid range is 0-${serialized.length}. Use an offset within that range.` }],
-						details: { error: "Offset out of range", offset, contentLength: serialized.length },
-					};
-				}
-				const endOffset = Math.min(offset + limit, serialized.length);
-				const artifactSlice = serialized.slice(offset, endOffset);
-				const hasMore = endOffset < serialized.length;
-				return {
-					content: [{ type: "text", text: artifactSlice }],
-					details: { responseId: artifact.id, type: "research", contentLength: serialized.length, offset, limit, returnedChars: artifactSlice.length, nextOffset: hasMore ? endOffset : null, truncated: hasMore },
-				};
-			}
-
 			if (data.type === "search" && data.queries) {
 				let queryData: QueryResultData | undefined;
 
@@ -3059,358 +2921,534 @@ export default function (pi: ExtensionAPI) {
 	});
 	}
 
-	if (isCommandEnabled(initConfig, "websearch")) pi.registerCommand("websearch", {
-		description: "Open web search curator",
-		handler: async (args, ctx) => {
-			const sessionToken = randomUUID();
-			const commandCallId = `cmd:${sessionToken}`;
-			closeCurator(commandCallId);
 
-			const raw = args.trim();
-			const queries = raw.length > 0
-				? normalizeQueryList(raw.split(","))
-				: [];
-
-			let bootstrap: CuratorBootstrap;
-			try {
-				bootstrap = await loadCuratorBootstrap(undefined, ctx);
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				ctx.ui.notify(`Failed to load web search config: ${message}`, "error");
+	if (isCommandEnabled(initConfig, "curator")) pi.registerCommand("web-search-config", {
+		description: "Configure web access: summary mode (cyclic), summary model (searchable), thinking level",
+		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("/web-search-config 需要交互式 TUI 模式", "error");
 				return;
 			}
-			const availableProviders = bootstrap.availableProviders;
-			const initialProvider = bootstrap.defaultProvider;
-			const curatorTimeoutSeconds = bootstrap.timeoutSeconds;
-			let currentProvider: CuratorProvider = initialProvider;
-			const commandConfig = loadConfig();
-			const rawSearchProvider = normalizeProviderInput(
-				commandConfig.searchProvider ?? commandConfig.provider ?? "auto",
-				`provider in ${WEB_SEARCH_CONFIG_PATH}`,
-			) ?? "auto";
-			let currentSearchProvider: SearchProviderSelection = Array.isArray(rawSearchProvider)
-				? rawSearchProvider
-				: rawSearchProvider === "auto" ? "auto" : initialProvider;
-			const summaryContext: SummaryGenerationContext = {
-				model: ctx.model,
-				modelRegistry: ctx.modelRegistry,
-				cwd: ctx.cwd,
-				isProjectTrusted: () => ctx.isProjectTrusted(),
-			};
-			const summaryModelChoices = await loadSummaryModelChoices(summaryContext);
 
-			ctx.ui.notify("Opening web search curator...", "info");
+			// 抽成函数：嵌套 ctx.ui.input（供应商 key 设置）结束后外层面板不会恢复，完成后自动重开
+			const openConfigPanel = async (): Promise<void> => {
+				const workflowValues: WebSearchWorkflow[] = ["summary-review", "auto-summary", "none"];
+				const workflowLabels: Record<string, string> = {
+					"summary-review": "总结并打开浏览器",
+					"auto-summary": "总结，不打开浏览器",
+					"none": "不总结",
+				};
+				const workflowDescriptions: Record<WebSearchWorkflow, string> = {
+					"summary-review": "总结后自动在浏览器展开搜索过程",
+					"auto-summary": "仅在会话内总结，不打开浏览器",
+					"none": "不总结，原文直接交给模型",
+				};
+				const thinkingValues = ["默认", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-			const collected = new Map<number, QueryResultData>();
-			const searchAbort = new AbortController();
-			let aborted = false;
-			let commandHandle: CuratorServerHandle | null = null;
-			const isCommandActive = () => commandHandle !== null && activeCurators.get(commandCallId) === commandHandle;
+				const initialConfig = loadConfigForExtensionInit();
+				const initialParsed = splitThinkingSuffix(typeof initialConfig.summaryModel === "string" ? initialConfig.summaryModel.trim() : "");
+				let currentWorkflow = resolveWorkflow(initialConfig.workflow, true);
+				let modelBase = initialParsed.value;
+				let thinkingLevel: string | null = initialParsed.thinkingLevel ?? null;
 
-			function sendFollowUpFromReturn(payload: ReturnType<typeof buildSearchReturn>) {
-				pi.sendMessage({
-					customType: "web-search-results",
-					content: payload.content,
-					display: true,
-					details: payload.details,
-				}, { triggerTurn: true, deliverAs: "followUp" });
-			}
+				// 全量模型目录（不按 enabledModels 过滤），子菜单中输入字符实时过滤
+				const modelItems: SelectItem[] = ctx.modelRegistry.getAvailable()
+					.map((model) => `${model.provider}/${model.id}`)
+					.sort()
+					.map((value) => ({ value, label: value }));
 
-			try {
-				const handle = await startCuratorServer(
-					{
-						queries,
-						sessionToken,
-						timeout: curatorTimeoutSeconds,
-						availableProviders,
-						defaultProvider: initialProvider,
-						searchProvider: toCuratorProvider(currentSearchProvider) ?? "auto",
-						summaryModels: summaryModelChoices.summaryModels,
-						defaultSummaryModel: summaryModelChoices.defaultSummaryModel,
-					},
-					{
-						async onSummarize(selectedQueryIndices, summarizeSignal, model, feedback) {
-							if (commandHandle && !isCommandActive()) {
-								throw new Error("Curator session is no longer active.");
-							}
-							return generateSummaryForSelectedIndices(
-								selectedQueryIndices,
-								collected,
-								summaryContext,
-								summarizeSignal,
-								model,
-								feedback,
-							);
-						},
-						onSubmit(payload) {
-							if (commandHandle && !isCommandActive()) return;
-							aborted = true;
-							searchAbort.abort();
-							const filtered = payload.selectedQueryIndices.length > 0
-								? filterByQueryIndices(payload.selectedQueryIndices, collected)
-								: collectAllResultsAndUrls(collected);
-							const base: SearchReturnOptions = {
-								queryList: filtered.results.map(r => r.query),
-								results: filtered.results,
-								urls: filtered.urls,
-								includeContent: false,
-								curated: true,
-								curatedFrom: collected.size,
-							};
-							if (!payload.rawResults) {
-								const resolvedSummary = resolveSummaryForSubmit(payload, collected);
-								base.workflow = "summary-review";
-								base.approvedSummary = resolvedSummary.approvedSummary;
-								base.summaryMeta = resolvedSummary.summaryMeta;
-							}
-							sendFollowUpFromReturn(buildSearchReturn(base));
-							closeCurator(commandCallId);
-						},
-						onCancel(reason) {
-							if (commandHandle && !isCommandActive()) return;
-							aborted = true;
-							searchAbort.abort();
-							if (reason === "timeout") {
-								const all = collectAllResultsAndUrls(collected);
-								const resolvedSummary = resolveSummaryForSubmit({ selectedQueryIndices: [], summary: undefined, summaryMeta: undefined }, collected);
-								sendFollowUpFromReturn(buildSearchReturn({
-									queryList: all.results.map(r => r.query),
-									results: all.results,
-									urls: all.urls,
-									includeContent: false,
-									curated: true,
-									curatedFrom: collected.size,
-									workflow: "summary-review",
-									approvedSummary: resolvedSummary.approvedSummary,
-									summaryMeta: resolvedSummary.summaryMeta,
-								}));
-							}
-							closeCurator(commandCallId);
-						},
-						onProviderChange(provider) {
-							if (commandHandle && !isCommandActive()) return;
-							const normalized = normalizeProviderInput(provider);
-							if (!normalized || normalized === "auto" || Array.isArray(normalized)) return;
-							currentProvider = normalized;
-							currentSearchProvider = normalized;
-							try {
-								saveConfig({ provider: normalized });
-							} catch (err) {
-								const message = err instanceof Error ? err.message : String(err);
-								console.error(`Failed to persist default provider: ${message}`);
-							}
-						},
-						async onAddSearch(query, provider) {
-							if (commandHandle && !isCommandActive()) {
-								throw new Error("Curator session is no longer active.");
-							}
-							const requestedProvider = resolveCuratorSearchProvider(provider, currentSearchProvider);
-							const response = await search(query, {
-								provider: requestedProvider,
-								signal: searchAbort.signal,
-								extensionContext: ctx,
-							});
-							if (commandHandle && !isCommandActive()) {
-								throw new Error("Curator session is no longer active.");
-							}
-							return toCuratorSearchEntries(response);
-						},
-						onAddSearchResults(entries) {
-							if (commandHandle && !isCommandActive()) return;
-							for (const entry of entries) {
-								collected.set(entry.queryIndex, indexedCuratorEntryToQueryResult(entry));
-							}
-						},
-						async onRewriteQuery(query, rewriteSignal) {
-							if (commandHandle && !isCommandActive()) {
-								throw new Error("Curator session is no longer active.");
-							}
-							return rewriteSearchQuery(query, summaryContext, rewriteSignal);
-						},
-					},
-				);
+				// 模型选择子菜单：标题 + 过滤计数 + SelectList
+				const buildModelPicker = (tui: { requestRender(): void }, theme: { fg(id: string, text: string): string; bold(text: string): string }, currentBase: string, subDone: (selectedValue?: string) => void) => {
+					const items: SelectItem[] = modelItems.map((item) => ({
+						value: item.value,
+						label: item.value === currentBase ? `${item.value} (当前)` : item.value,
+					}));
+					let filter = "";
+					let selectList = new SelectList(items.slice(), 12, getSelectListTheme());
+					let filteredCount = items.length;
 
-				commandHandle = handle;
-				activeCurators.set(commandCallId, handle);
-				let browserOpenError: string | null = null;
-				if (!shouldAutoOpenCuratorBrowser(loadConfig())) {
-					ctx.ui.notify(`Search curator is running. Open manually: ${handle.url}`, "info");
-				} else {
-					const open = platform() === "darwin" ? await getGlimpseOpen() : null;
-					if (open) {
+					const rebuild = () => {
+						const query = filter.toLowerCase();
+						let filtered = query
+							? items.filter((item) => item.value.toLowerCase().includes(query))
+							: [...items];
+						// 无过滤时把当前模型置顶，便于快速确认
+						if (!query && currentBase) {
+							const idx = filtered.findIndex((item) => item.value === currentBase);
+							if (idx > 0) filtered = [filtered[idx], ...filtered.slice(0, idx), ...filtered.slice(idx + 1)];
+						}
+						filteredCount = filtered.length;
+						selectList = new SelectList(filtered, 12, getSelectListTheme());
+						if (currentBase) {
+							const idx = filtered.findIndex((item) => item.value === currentBase);
+							if (idx >= 0) selectList.setSelectedIndex(idx);
+						}
+						selectList.onSelect = (item) => subDone(item.value);
+						selectList.onCancel = () => subDone();
+					};
+					rebuild();
+
+					return {
+						render: (width: number) => {
+							const lines: string[] = [];
+							lines.push(theme.fg("accent", theme.bold("选择总结模型")));
+							lines.push(theme.fg("dim", filter ? `过滤 "${filter}" • 命中 ${filteredCount}/${items.length} 个模型` : `共 ${items.length} 个模型（输入字符过滤）`));
+							lines.push("");
+							if (filteredCount === 0) {
+								lines.push(theme.fg("dim", "无匹配模型 — backspace 清除过滤"));
+							} else {
+								lines.push(...selectList.render(width));
+							}
+							lines.push(theme.fg("dim", "输入过滤 • backspace 删除 • ↑↓ 选择 • enter 确认 • esc 取消"));
+							return lines;
+						},
+						invalidate: () => selectList.invalidate(),
+						handleInput: (data: string) => {
+							if (data.length === 1 && data >= " " && data !== "\x7f" && data !== "\x1b") {
+								filter += data;
+								rebuild();
+								tui.requestRender();
+								return;
+							}
+							if (data === "\x7f" || data === "\b") {
+								filter = filter.slice(0, -1);
+								rebuild();
+								tui.requestRender();
+								return;
+							}
+							selectList.handleInput(data);
+							tui.requestRender();
+						},
+					};
+				};
+
+				// 搜索供应商：面板打开时统一探测可用性，选中未配置项时即时警告
+				const availability = await getProviderAvailability(ctx);
+				const availabilityMap = availability as unknown as Record<string, boolean>;
+				const providerRowLabel = (value: SearchProviderSelection): string => {
+					if (Array.isArray(value)) return value.join(" → ");
+					if (value === "auto") return "auto（自动回退）";
+					if (value === "all") return "all（并行聚合）";
+					return availabilityMap[value] ? value : `${value}（未配置）`;
+				};
+				const describeProviderSelection = (value: SearchProviderSelection): string => {
+					if (Array.isArray(value)) return `按序回退: ${value.join(" → ")}`;
+					if (value === "all") return "已配置供应商并行聚合，取并集";
+					if (value === "auto") {
+						const routing = getConfiguredSearchRouting();
+						return routing
+							? `自动回退: ${routing.providers.join(" → ")}`
+							: "自动回退: 内建顺序（searxng → exa → brave → …）";
+					}
+					return `固定使用 ${value}，失败不回退`;
+				};
+				let currentProviderSelection: SearchProviderSelection = normalizeProviderInput(initialConfig.searchProvider ?? initialConfig.provider) ?? "auto";
+
+				// 供应商子菜单：同模型选择器的形态，项带可用性/免费徽标
+				const providerBadge = (p: string): string => {
+					if (availabilityMap[p]) return FREE_PROVIDERS.has(p) ? `✓ ${p}（免费）` : `✓ ${p}`;
+					if (PROVIDER_SETUP[p]?.kind === "base-url") return `✗ ${p}（免费，需自托管地址）`;
+					return `✗ ${p}（未配置）`;
+				};
+				const providerEntries: SelectItem[] = [
+					{ value: "auto", label: "auto（自动回退）" },
+					{ value: "all", label: "all（并行聚合）" },
+					...RESOLVED_SEARCH_PROVIDERS.map((p) => ({
+						value: p,
+						label: providerBadge(p),
+					})),
+				];
+				const buildProviderPicker = (tui: { requestRender(): void }, theme: { fg(id: string, text: string): string; bold(text: string): string }, subDone: (selectedValue?: string) => void) => {
+					const pinKey = Array.isArray(currentProviderSelection) ? currentProviderSelection.join(" → ") : currentProviderSelection;
+					const entries = providerEntries.map((item) => ({
+						value: item.value,
+						label: item.value === pinKey ? `${item.label} (当前)` : item.label,
+					}));
+					let filter = "";
+					let selectList = new SelectList(entries.slice(), 12, getSelectListTheme());
+					let filteredCount = entries.length;
+
+					const rebuild = () => {
+						const query = filter.toLowerCase();
+						let filtered = query
+							? entries.filter((item) => item.value.toLowerCase().includes(query) || item.label.toLowerCase().includes(query))
+							: [...entries];
+						if (!query && pinKey) {
+							const idx = filtered.findIndex((item) => item.value === pinKey);
+							if (idx > 0) filtered = [filtered[idx], ...filtered.slice(0, idx), ...filtered.slice(idx + 1)];
+						}
+						filteredCount = filtered.length;
+						selectList = new SelectList(filtered, 12, getSelectListTheme());
+						if (pinKey) {
+							const idx = filtered.findIndex((item) => item.value === pinKey);
+							if (idx >= 0) selectList.setSelectedIndex(idx);
+						}
+						selectList.onSelect = (item) => subDone(item.value);
+						selectList.onCancel = () => subDone();
+					};
+					rebuild();
+
+					return {
+						render: (width: number) => {
+							const lines: string[] = [];
+							lines.push(theme.fg("accent", theme.bold("选择搜索供应商")));
+							lines.push(theme.fg("dim", filter ? `过滤 "${filter}" • 命中 ${filteredCount}/${entries.length} 个供应商` : `共 ${entries.length} 个供应商（✓ 已配置 / ✗ 未配置，输入字符过滤）`));
+							lines.push("");
+							if (filteredCount === 0) {
+								lines.push(theme.fg("dim", "无匹配供应商 — backspace 清除过滤"));
+							} else {
+								lines.push(...selectList.render(width));
+							}
+							lines.push(theme.fg("dim", "输入过滤 • backspace 删除 • ↑↓ 选择 • enter 确认 • esc 取消"));
+							return lines;
+						},
+						invalidate: () => selectList.invalidate(),
+						handleInput: (data: string) => {
+							if (data.length === 1 && data >= " " && data !== "\x7f" && data !== "\x1b") {
+								filter += data;
+								rebuild();
+								tui.requestRender();
+								return;
+							}
+							if (data === "\x7f" || data === "\b") {
+								filter = filter.slice(0, -1);
+								rebuild();
+								tui.requestRender();
+								return;
+							}
+							selectList.handleInput(data);
+							tui.requestRender();
+						},
+					};
+				};
+
+				// 与 web_search 自动总结一致的默认模型挑选逻辑
+				const autoModel = (await loadSummaryModelChoices({
+					model: ctx.model,
+					modelRegistry: ctx.modelRegistry,
+					cwd: ctx.cwd,
+					isProjectTrusted: () => ctx.isProjectTrusted(),
+				})).defaultSummaryModel;
+
+				// Gemini Web 账号状态（只读展示，面板打开时读取一次）
+				const resolveGoogleAccountLabel = async (): Promise<string> => {
+					if (!isBrowserCookieAccessAllowed()) return `未启用（allowBrowserCookies）`;
+					const cookies = await isGeminiWebAvailable();
+					if (!cookies) {
+						const diag = getGeminiWebAvailabilityDiagnostic();
+						return diag ? `不可用： ${diag}` : "不可用（未登录 gemini.google.com）";
+					}
+					const email = await getActiveGoogleEmail(cookies);
+					return email ?? "可用（账号未知）";
+				};
+				const googleAccountLabel = await resolveGoogleAccountLabel();
+
+				await ctx.ui.custom((tui, theme, _kb, done) => {
+					const config = loadConfigForExtensionInit();
+					currentWorkflow = resolveWorkflow(config.workflow, true);
+					const parsed = splitThinkingSuffix(typeof config.summaryModel === "string" ? config.summaryModel.trim() : "");
+					modelBase = parsed.value;
+					thinkingLevel = parsed.thinkingLevel ?? null;
+					currentProviderSelection = normalizeProviderInput(config.searchProvider ?? config.provider) ?? "auto";
+
+					const save = (updates: Partial<WebSearchConfig>, successLabel?: string): boolean => {
 						try {
-							const win = openInGlimpse(open, handle.url, "Search Curator");
-							glimpseWins.set(commandCallId, win);
-							win.on("closed", () => {
-								if (glimpseWins.get(commandCallId) === win) {
-									glimpseWins.delete(commandCallId);
-									closeCurator(commandCallId);
-								}
-							});
+							saveConfig(updates);
+							if (successLabel !== undefined) ctx.ui.notify(successLabel, "info");
+							return true;
 						} catch (err) {
 							const message = err instanceof Error ? err.message : String(err);
-							console.error(`Failed to open Glimpse curator window: ${message}`);
-							glimpseWins.delete(commandCallId);
-							try {
-								await openInBrowser(pi, handle.url);
-							} catch (browserErr) {
-								browserOpenError = browserErr instanceof Error ? browserErr.message : String(browserErr);
-							}
+							ctx.ui.notify(`Failed to save config: ${message}`, "error");
+							return false;
 						}
-					} else {
-						try {
-							await openInBrowser(pi, handle.url);
-						} catch (browserErr) {
-							browserOpenError = browserErr instanceof Error ? browserErr.message : String(browserErr);
-						}
-					}
-					if (browserOpenError) {
-						console.error(`Failed to open curator UI: ${browserOpenError}`);
-						ctx.ui.notify(`Search curator is running, but the browser did not open automatically. Open manually: ${handle.url}`, "info");
-					}
-				}
+					};
 
-				if (queries.length > 0) {
-					(async () => {
-						let nextResultIndex = queries.length;
-						for (let qi = 0; qi < queries.length; qi++) {
-							if (aborted || !isCommandActive()) break;
-							const requestedProvider = currentSearchProvider;
-							try {
-								const response = await search(queries[qi], {
-									provider: requestedProvider,
-									signal: searchAbort.signal,
-									extensionContext: ctx,
-								});
-								if (aborted || !isCommandActive()) break;
-								const entries = toCuratorSearchEntries(response);
-								for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
-									const entry = entries[entryIndex];
-									const resultIndex = entryIndex === 0 ? qi : nextResultIndex++;
-									const indexedEntry: IndexedCuratorSearchEntry = {
-										...entry,
-										queryIndex: resultIndex,
-										query: queries[qi],
-									};
-									collected.set(resultIndex, indexedCuratorEntryToQueryResult(indexedEntry));
-									if (entry.error) {
-										handle.pushError(resultIndex, entry.error, entry.provider, { query: queries[qi], slotIndex: qi });
-									} else {
-										handle.pushResult(resultIndex, { ...entry, query: queries[qi], slotIndex: qi });
-									}
+					const modelPickerItem: SettingItem = {
+						id: "summary-model",
+						label: "总结模型",
+						currentValue: modelBase ? `${modelBase}${thinkingLevel ? `:${thinkingLevel}` : ""}` : "自动（不指定）",
+						description: "enter 打开全量模型搜索选择（不做 enabledModels 过滤）",
+						submenu: (current, subDone) => buildModelPicker(tui, theme, current, subDone),
+					};
+
+					// 思考等级说明行：回显实际生效的 provider/model:level（含自动默认模型）
+					const thinkingDescription = () => {
+						const base = modelBase || autoModel;
+						return base
+							? `生效: ${base}:${thinkingLevel ?? "默认（不附加等级）"} • 空格或←→切换`
+							: "无可用总结模型 — 请先在“总结模型”中指定";
+					};
+
+					const providerPickerItem: SettingItem = {
+						id: "search-provider",
+						label: "搜索供应商",
+						currentValue: providerRowLabel(currentProviderSelection),
+						description: `${describeProviderSelection(currentProviderSelection)} • enter 打开选择（✓ 已配置 / ✗ 未配置）`,
+						submenu: (_current, subDone) => buildProviderPicker(tui, theme, subDone),
+					};
+
+					const items: SettingItem[] = [
+						{
+							id: "summary-mode",
+							label: "总结模式",
+							currentValue: `${currentWorkflow} (${workflowLabels[currentWorkflow] ?? currentWorkflow})`,
+							values: workflowValues.map((wf) => `${wf} (${workflowLabels[wf]})`),
+							description: workflowDescriptions[currentWorkflow],
+						},
+						modelPickerItem,
+						{
+							id: "summary-thinking",
+							label: "思考等级",
+							currentValue: thinkingLevel ?? "默认",
+							values: thinkingValues,
+							description: thinkingDescription(),
+						},
+						providerPickerItem,
+						{
+							id: "google-account",
+							label: "Google 账号",
+							currentValue: googleAccountLabel,
+							description: "Gemini Web 浏览器 Cookie 状态（只读，重新打开面板刷新）",
+						},
+					];
+
+					const settingsList = new SettingsList(
+						items,
+						items.length + 2,
+						getSettingsListTheme(),
+						(id, newValue) => {
+							if (id === "summary-mode") {
+								const wf = newValue.slice(0, newValue.indexOf(" ")) as WebSearchWorkflow;
+								if (save({ workflow: wf })) {
+									currentWorkflow = wf;
+									items[0].description = workflowDescriptions[wf];
+								} else {
+									items[0].currentValue = `${currentWorkflow} (${workflowLabels[currentWorkflow]})`;
 								}
-							} catch (err) {
-								if (aborted || !isCommandActive()) break;
-								const message = err instanceof Error ? err.message : String(err);
-								const failedProvider = toCuratorProvider(requestedProvider);
-								handle.pushError(qi, message, failedProvider, { query: queries[qi], slotIndex: qi });
-								collected.set(qi, { query: queries[qi], answer: "", results: [], error: message, provider: failedProvider });
+								return;
 							}
-						}
-						if (!aborted && isCommandActive()) handle.searchesDone();
-					})();
-				} else {
-					if (isCommandActive()) handle.searchesDone();
+							if (id === "summary-model") {
+								const value = `${newValue}${thinkingLevel ? `:${thinkingLevel}` : ""}`;
+								if (save({ summaryModel: value })) {
+									modelBase = newValue;
+									modelPickerItem.currentValue = value;
+									items[2].description = thinkingDescription();
+								}
+								return;
+							}
+							if (id === "summary-thinking") {
+								const base = modelBase || autoModel;
+								if (!base) {
+									ctx.ui.notify("没有可用的总结模型，请先在“总结模型”中显式指定", "error");
+									items[2].currentValue = thinkingLevel ?? "默认";
+									return;
+								}
+								const level = newValue === "默认" ? null : newValue;
+								const value = level ? `${base}:${level}` : base;
+								if (save({ summaryModel: value })) {
+									modelBase = base;
+									thinkingLevel = level;
+									modelPickerItem.currentValue = value;
+									items[2].description = thinkingDescription();
+								} else {
+									items[2].currentValue = thinkingLevel ?? "默认";
+								}
+								return;
+							}
+							if (id === "search-provider") {
+								const provider = newValue as SearchProviderSelection;
+								if (save({ searchProvider: provider })) {
+									currentProviderSelection = provider;
+									providerPickerItem.currentValue = providerRowLabel(provider);
+									providerPickerItem.description = `${describeProviderSelection(provider)} • 凭据在 /web-search-auth 面板管理 • enter 打开选择`;
+									if (provider !== "auto" && provider !== "all" && !Array.isArray(provider) && !availabilityMap[provider]) {
+										const setup = PROVIDER_SETUP[provider];
+										if (setup) {
+											ctx.ui.notify(`${provider} 未配置 — 请运行 /web-search-auth 设置${setup.kind === "base-url" ? " Base URL" : " API key"}（或配环境变量）`, "warning");
+										} else {
+											ctx.ui.notify(`${provider} 未配置（凭据由 pi 模型注册表提供，请在 pi 配置中设置 kimi provider 的模型与 API key）`, "warning");
+										}
+									}
+								} else {
+									providerPickerItem.currentValue = providerRowLabel(currentProviderSelection);
+								}
+								return;
+							}
+						},
+						() => done(undefined),
+					);
+
+					const container = new Container();
+					container.addChild(new Text(theme.fg("accent", theme.bold("Web Access 配置")), 1, 1));
+					container.addChild(new Text(theme.fg("dim", "enter/空格 循环切换 • enter 打开模型/供应商选择 • esc 退出"), 1, 1));
+					container.addChild(settingsList);
+
+					return {
+						render: (width: number) => container.render(width),
+						invalidate: () => container.invalidate(),
+						handleInput: (data: string) => {
+							settingsList.handleInput?.(data);
+							tui.requestRender();
+						},
+					};
+				});
+			};
+			await openConfigPanel();
+		},
+	});
+
+	if (isCommandEnabled(initConfig, "auth")) pi.registerCommand("web-search-auth", {
+		description: "Manage provider credentials: set/clear API keys and base URLs",
+		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("/web-search-auth 需要交互式 TUI 模式", "error");
+				return;
+			}
+
+			const maskSecret = (v: string): string => (v.length <= 8 ? "••••" : `${v.slice(0, 4)}…${v.slice(-4)}`);
+			const availability = await getProviderAvailability(ctx);
+			const availabilityMap = availability as unknown as Record<string, boolean>;
+
+			// 嵌套 ctx.ui.input 结束后外层面板不会恢复，抽成函数完成后重开
+			const saveConfigSilently = (updates: Partial<WebSearchConfig> & Record<string, unknown>): boolean => {
+				try {
+					saveConfig(updates);
+					return true;
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					ctx.ui.notify(`Failed to save config: ${message}`, "error");
+					return false;
 				}
-			} catch (err) {
-				closeCurator(commandCallId);
-				const message = err instanceof Error ? err.message : String(err);
-				ctx.ui.notify(`Failed to open curator: ${message}`, "error");
+			};
+			// 顺序化流程：面板用 done() 把动作带出（面板自然关闭），在外层输入 key，再用循环重开面板。
+			// 不能在 ctx.ui.custom 回调里嵌套 ctx.ui.input —— 嵌套会破坏 pi 的 overlay 栈，
+			// 导致输入框关闭后回车键被残留组件截走（编辑器能输入但不能发送）。
+			for (;;) {
+				const action = await ctx.ui.custom((tui, theme, _kb, done: (value?: { kind: "setup" | "clear"; provider: string }) => void) => {
+					let config = loadConfigForExtensionInit();
+
+					// 凭据管理子菜单：两个动作（SettingsList 的 values 是循环切换，currentValue 不在列表内时永远到不了“清除”，故用子菜单）
+					const buildAuthOptionPicker = (pickerTheme: { fg(id: string, text: string): string; bold(text: string): string }, subDone: (action?: "setup" | "clear") => void) => {
+						const options: SelectItem[] = [
+							{ value: "setup", label: "设置 / 更新" },
+							{ value: "clear", label: "清除已保存的值" },
+						];
+						let selectList = new SelectList(options.slice(), 4, getSelectListTheme());
+						selectList.onSelect = (item) => subDone(item.value as "setup" | "clear");
+						selectList.onCancel = () => subDone();
+						return {
+							render: (width: number) => {
+								const lines: string[] = [];
+								lines.push(pickerTheme.fg("accent", pickerTheme.bold("选择动作")));
+								lines.push("");
+								lines.push(...selectList.render(width));
+								lines.push(pickerTheme.fg("dim", "↑↓ 选择 • enter 确认 • esc 取消"));
+								return lines;
+							},
+							invalidate: () => selectList.invalidate(),
+							handleInput: (data: string) => {
+								selectList.handleInput(data);
+								tui.requestRender();
+							},
+						};
+					};
+
+					const items: SettingItem[] = Object.keys(PROVIDER_SETUP).sort().map((provider) => {
+						const setup = PROVIDER_SETUP[provider]!;
+						const current = (config as Record<string, unknown>)[setup.configKey];
+						const configured = typeof current === "string" && current.trim().length > 0;
+						const valueKind = setup.kind === "base-url" ? "Base URL" : "API key";
+						const freeNote = FREE_PROVIDERS.has(provider) ? " • 免费供应商（无需 key 也可用）" : "";
+						return {
+							id: `provider-auth:${provider}`,
+							label: provider,
+							currentValue: configured
+								? `✓ ${setup.kind === "base-url" ? String(current) : maskSecret(String(current))}`
+								: availabilityMap[provider] ? "✓（环境变量/其他途径）" : "✗ 未配置",
+							submenu: (_current: string, subDone: (action?: "setup" | "clear") => void) => buildAuthOptionPicker(theme, subDone),
+							description: `${valueKind} • ${setup.hint}${freeNote}`,
+						};
+					});
+					items.push({
+						id: "auth-note-kimi",
+						label: "kimi",
+						currentValue: "凭据由 pi 模型注册表提供",
+						description: "在 pi 配置中设置 kimi provider 的模型与 API key（本面板不管理）",
+					});
+
+					const saveLocal = (updates: Partial<WebSearchConfig> & Record<string, unknown>): boolean => {
+						try {
+							saveConfig(updates);
+							return true;
+						} catch (err) {
+							const message = err instanceof Error ? err.message : String(err);
+							ctx.ui.notify(`Failed to save config: ${message}`, "error");
+							return false;
+						}
+					};
+
+					const settingsList = new SettingsList(
+						items,
+						items.length + 2,
+						getSettingsListTheme(),
+						(id, newValue) => {
+							if (!id.startsWith("provider-auth:")) return;
+							const provider = id.slice("provider-auth:".length);
+							if (newValue === "setup") {
+								done({ kind: "setup", provider });
+								return;
+							}
+							if (newValue === "clear") {
+								const setup = PROVIDER_SETUP[provider]!;
+								const updates: Partial<WebSearchConfig> & Record<string, unknown> = {};
+								updates[setup.configKey] = undefined;
+								if (saveLocal(updates)) {
+									ctx.ui.notify(`${provider} 的 ${setup.configKey} 已清除，重启 pi 后生效`, "info");
+								}
+								done({ kind: "clear", provider }); // 循环重开面板以刷新该行状态
+								return;
+							}
+						},
+						() => done(undefined),
+					);
+
+					const container = new Container();
+					container.addChild(new Text(theme.fg("accent", theme.bold(" Web Access 供应商凭据")), 1, 1));
+					container.addChild(new Text(theme.fg("dim", `共 ${Object.keys(PROVIDER_SETUP).length} 个供应商（enter 设置，选择“清除”移除；修改后重启 pi 生效）`), 1, 1));
+					container.addChild(new Text(theme.fg("dim", "免费无需 key: duckduckgo • anysearch • parallel-mcp • exa • searxng/firecrawl（免费自托管）"), 1, 1));
+					container.addChild(settingsList);
+
+					return {
+						render: (width: number) => container.render(width),
+						invalidate: () => container.invalidate(),
+						handleInput: (data: string) => {
+							settingsList.handleInput?.(data);
+							tui.requestRender();
+						},
+					};
+				});
+				if (!action) return; // esc / 面板关闭
+				if (action.kind === "clear") continue; // 已在 onChange 中处理，直接重开面板刷新
+				const setup = PROVIDER_SETUP[action.provider]!;
+				const title = setup.kind === "base-url" ? `设置 ${action.provider} Base URL` : `设置 ${action.provider} API Key`;
+				const value = await ctx.ui.input(title, setup.hint);
+				const trimmed = value?.trim();
+				if (!trimmed) {
+					ctx.ui.notify("未修改", "info");
+					continue;
+				}
+				const updates: Partial<WebSearchConfig> & Record<string, unknown> = {};
+				updates[setup.configKey] = trimmed;
+				if (saveConfigSilently(updates)) {
+					ctx.ui.notify(`${action.provider} 的 ${setup.configKey} 已保存，重启 pi 后生效`, "info");
+				}
+				// 循环重开面板，显示更新后的状态
 			}
+			return;
 		},
 	});
 
-	if (isCommandEnabled(initConfig, "curator")) pi.registerCommand("curator", {
-		description: "Toggle or configure the search curator workflow",
-		handler: async (args, ctx) => {
-			const arg = args.trim().toLowerCase();
-
-			let newWorkflow: WebSearchWorkflow;
-			if (arg.length === 0) {
-				const current = resolveWorkflow(loadConfigForExtensionInit().workflow, true);
-				newWorkflow = current === "none" ? "summary-review" : "none";
-			} else if (arg === "on") {
-				newWorkflow = "summary-review";
-			} else if (arg === "off") {
-				newWorkflow = "none";
-			} else if (arg === "none" || arg === "summary-review" || arg === "auto-summary") {
-				newWorkflow = arg;
-			} else {
-				ctx.ui.notify(`Unknown option: ${arg}. Use on, off, summary-review, or auto-summary.`, "error");
-				return;
-			}
-
-			try {
-				saveConfig({ workflow: newWorkflow });
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				ctx.ui.notify(`Failed to save config: ${message}`, "error");
-				return;
-			}
-
-			const label = newWorkflow === "none"
-				? `Curator disabled — ${toolNames.webSearch} will return raw results`
-				: newWorkflow === "auto-summary"
-					? `Auto-summary enabled — ${toolNames.webSearch} will generate a summary without opening the curator`
-					: `Curator enabled — ${toolNames.webSearch} will open curator and auto-generate a summary draft`;
-			pi.sendMessage({
-				customType: "curator-config",
-				content: [{ type: "text", text: label }],
-				display: true,
-				details: { workflow: newWorkflow },
-			}, { triggerTurn: false, deliverAs: "followUp" });
-		},
-	});
-
-	if (isCommandEnabled(initConfig, "google-account")) pi.registerCommand("google-account", {
-		description: "Show the active Google account for Gemini Web",
-		handler: async () => {
-			if (!isBrowserCookieAccessAllowed()) {
-				pi.sendMessage({
-					customType: "google-account",
-					content: [{ type: "text", text: `Gemini Web browser cookie access is disabled. Set allowBrowserCookies: true in ${WEB_SEARCH_CONFIG_PATH} to enable it.` }],
-					display: true,
-					details: { available: false, cookieAccessAllowed: false },
-				}, { triggerTurn: true, deliverAs: "followUp" });
-				return;
-			}
-
-			const cookies = await isGeminiWebAvailable();
-			if (!cookies) {
-				const diagnostic = getGeminiWebAvailabilityDiagnostic();
-				const diagnosticDetails = getGeminiWebAvailabilityDiagnosticDetails();
-				const attempted = formatCookieAttempts(diagnosticDetails?.attempts ?? []);
-				const text = diagnostic
-					? `Gemini Web is unavailable: ${diagnostic}${attempted ? ` Attempted browser profiles: ${attempted}.` : ""}`
-					: "Gemini Web is unavailable. Sign into gemini.google.com in a supported Chromium-based browser.";
-				pi.sendMessage({
-					customType: "google-account",
-					content: [{ type: "text", text }],
-					display: true,
-					details: { available: false, cookieAccessAllowed: true, diagnostic, cookieDiagnostic: diagnosticDetails },
-				}, { triggerTurn: true, deliverAs: "followUp" });
-				return;
-			}
-
-			const email = await getActiveGoogleEmail(cookies);
-			const text = email
-				? `Active Google account: ${email}`
-				: "Gemini Web is available, but the active Google account could not be determined.";
-
-			pi.sendMessage({
-				customType: "google-account",
-				content: [{ type: "text", text }],
-				display: true,
-				details: { available: true, email: email ?? null },
-			}, { triggerTurn: true, deliverAs: "followUp" });
-		},
-	});
-
-	function formatCookieAttempts(attempts: { browser: string; profile: string; status: string }[]): string {
-		return attempts.map(({ browser, profile, status }) => `${browser}/${profile} (${status})`).join(", ");
-	}
-
-	if (isCommandEnabled(initConfig, "search")) pi.registerCommand("search", {
+	if (isCommandEnabled(initConfig, "search")) pi.registerCommand("web-search-history", {
 		description: "Browse stored web search results",
 		handler: async (_args, ctx) => {
 			const results = getAllResults();

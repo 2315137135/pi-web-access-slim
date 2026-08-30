@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { activityMonitor } from "./activity.ts";
 import type { ExtractedContent } from "./extract.ts";
 import type { SearchOptions, SearchResponse } from "./perplexity.ts";
-import { hasCredentialSource, redactCredential, resolveCredential } from "./credential-source.ts";
+import { redactCredential, resolveCredential } from "./credential-source.ts";
 import { fetchWithCredentialRedirects, getWebSearchConfigPath, resolveApiBaseUrl } from "./utils.ts";
 
 const EXA_API_BASE_URL = "https://api.exa.ai";
@@ -443,13 +443,6 @@ export function isExaAvailable(): boolean {
 	return true;
 }
 
-export function hasExaApiKey(): boolean {
-	return hasCredentialSource({
-		provider: "Exa",
-		configuredValue: loadConfig().exaApiKey,
-		environmentValue: process.env.EXA_API_KEY,
-	});
-}
 
 export async function searchWithExa(query: string, options: ExaSearchOptions = {}): Promise<ExaSearchResult> {
 	const apiKey = await getApiKey(options.signal);

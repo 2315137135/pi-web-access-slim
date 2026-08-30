@@ -105,9 +105,6 @@ async function resolveCloudflareApiKey(signal?: AbortSignal): Promise<string | n
 	});
 }
 
-export function getCloudflareApiKey(): string | null {
-	return getLegacyCloudflareApiKey();
-}
 
 export function isGatewayConfigured(): boolean {
 	return isCloudflareGateway() && hasCredentialSource({
