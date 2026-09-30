@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Declared `typebox` as a `"*"` peer dependency instead of a runtime dependency; Pi supplies it to extensions and warns when the manifest contradicts that.
+
 ## [0.25.0] - 2026-08-25
 
 ### Highlights
