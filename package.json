@@ -1,7 +1,7 @@
 {
   "name": "pi-web-access-slim",
   "version": "0.25.0",
-  "description": "Prompt-slim fork of pi-web-access with default-route search, URL fetching, GitHub support, PDF extraction, cached content retrieval, and automatic summaries.",
+  "description": "Prompt-slim fork of pi-web-access with default-route search, URL fetching, GitHub support, PDF extraction, and cached content retrieval.",
   "type": "module",
   "scripts": {
     "test": "node --test",

@@ -83,10 +83,10 @@ test("plain (non-cancel) error stays a clean single line — no diagnostic noise
 	assert.equal(plan.expandHint, null, "plain error must have no expand hint");
 });
 
-// --- other tools (fetch_content / get_search_content): the same
+// --- other tools (web_fetch): the same
 // dead-end exists in their renderResults; they now reuse buildSearchErrorPlan via
 // extraLines. These pin that non-cancel errors with detail become expandable
-// WITHOUT the curator/browser diagnostics (which are web_search-only). ---
+// WITHOUT the browser diagnostics (which are web_search-only). ---
 
 test("fetch_content-style error (extras, no cancel) is expandable without browser diagnostics", () => {
 	const plan = buildSearchErrorPlan({
@@ -98,7 +98,7 @@ test("fetch_content-style error (extras, no cancel) is expandable without browse
 	assert.ok(plan.expanded.length > 1);
 	assert.match(expanded, /urls: 1\/2 succeeded/);
 	assert.match(expanded, /resp_abc/);
-	// MUST NOT show curator/browser diagnostics for a non-cancel error.
+	// MUST NOT show browser diagnostics for a non-cancel error.
 	assert.doesNotMatch(expanded, /browser|cancel reason|queries started/);
 	assert.equal(typeof plan.expandHint, "string");
 	assert.match(plan.expandHint, /ctrl\+o to expand/i);
@@ -140,16 +140,12 @@ test("index.ts imports buildSearchErrorPlan and wires it into the web_search err
 	// The web_search renderResult error branch must call buildSearchErrorPlan.
 	// (Mutation: reverting renderResult to `return new Text(error...)` drops this.)
 	assert.match(indexSrc, /buildSearchErrorPlan\(details as SearchErrorDetails\)/);
-	// buildCurationCancelledReturn must now carry partial diagnostics into details
-	// (mutation: dropping the partial arg reverts to the discarded-results bug).
-	assert.match(indexSrc, /buildCurationCancelledReturn\(reason, \{/);
-	assert.match(indexSrc, /cancelledQueries/);
-	// the 2 other tools must also delegate to buildSearchErrorPlan (mutation-proof:
-	// reverting any of them to the bare single-line drops its buildSearchErrorPlan call).
-	// Count call sites: web_search + fetch_content + get_search_content = 3.
+	// the other tool must also delegate to buildSearchErrorPlan (mutation-proof:
+	// reverting it to the bare single-line drops its buildSearchErrorPlan call).
+	// Count call sites: web_search + web_fetch = 2.
 	const callSiteCount = (indexSrc.match(/const plan = buildSearchErrorPlan\(/g) || []).length;
-	assert.equal(callSiteCount, 3, `expected 3 buildSearchErrorPlan call sites, got ${callSiteCount}`);
-	// renderSearchErrorPlan shared renderer is used by all 3.
+	assert.equal(callSiteCount, 2, `expected 2 buildSearchErrorPlan call sites, got ${callSiteCount}`);
+	// renderSearchErrorPlan shared renderer is used by all 2.
 	const renderCount = (indexSrc.match(/return renderSearchErrorPlan\(plan, expanded, theme\)/g) || []).length;
-	assert.equal(renderCount, 3, `expected 3 renderSearchErrorPlan returns, got ${renderCount}`);
+	assert.equal(renderCount, 2, `expected 2 renderSearchErrorPlan returns, got ${renderCount}`);
 });

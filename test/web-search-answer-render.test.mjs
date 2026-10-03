@@ -61,7 +61,6 @@ test("web_search preserves OpenAI answers even when no sources are returned", as
 		const result = await webSearch.execute("call", {
 			query: "answer only",
 			provider: "openai",
-			workflow: "none",
 		});
 		console.log(JSON.stringify({ text: result.content[0].text, details: result.details }));
 	`, {

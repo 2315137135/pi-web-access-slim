@@ -22,7 +22,7 @@ test("registers eagerly and loads content extraction on first use", () => {
 function buildChildScript(moduleUrl) {
 	return `
 		import assert from "node:assert/strict";
-		import { existsSync } from "node:fs";
+		import { existsSync, readFileSync } from "node:fs";
 		import { mkdtemp, writeFile } from "node:fs/promises";
 		import { createServer } from "node:http";
 		import { register } from "node:module";
@@ -73,9 +73,9 @@ function buildChildScript(moduleUrl) {
 		initializeExtension(pi);
 		assert.deepEqual(
 			tools.map((tool) => tool.name),
-			["web_search", "source_check", "fetch_content", "get_search_content"],
+			["web_search", "web_fetch"],
 		);
-		assert.ok(commands.includes("websearch"), "websearch command was not registered");
+		assert.ok(commands.includes("web-search-config"), "websearch command was not registered");
 		assert.ok(shortcuts.length > 0, "shortcuts were not registered");
 		assert.ok(events.includes("session_start"), "session handlers were not registered");
 		assert.equal(existsSync(markerPath), false, "extract.ts loaded during registration");
@@ -96,7 +96,7 @@ function buildChildScript(moduleUrl) {
 		try {
 			const address = server.address();
 			assert.ok(address && typeof address === "object");
-			const fetchTool = tools.find((tool) => tool.name === "fetch_content");
+			const fetchTool = tools.find((tool) => tool.name === "web_fetch");
 			const result = await fetchTool.execute(
 				"lazy-load-regression",
 				{ url: \`http://127.0.0.1:\${address.port}/article\` },
@@ -105,8 +105,9 @@ function buildChildScript(moduleUrl) {
 			);
 
 			assert.equal(existsSync(markerPath), true, "extract.ts did not load on first use");
-			assert.equal(result.details.successful, 1);
-			assert.match(result.content.at(-1).text, /preserving first-use extraction/);
+			assert.equal(result.details.cached, false);
+			assert.match(result.content.at(-1).text, /path:/);
+			assert.match(readFileSync(result.details.path, "utf8"), /preserving first-use extraction/);
 		} finally {
 			await new Promise((resolve) => server.close(resolve));
 		}

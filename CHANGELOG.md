@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+- Removed the browser curator and model-generated summary workflow together with the `workflow`, `summaryModel`, `summaryGenerationDeadlineMs`, `curatorTimeoutSeconds`, `curatorRemote`, and `autoOpenBrowser` config keys and the `commands.curator` gate. `web_search` now always returns retrieved results, and `/web-search-config` only configures the search-provider route.
+
 ### Fixed
 - Declared `typebox` as a `"*"` peer dependency instead of a runtime dependency; Pi supplies it to extensions and warns when the manifest contradicts that.
 

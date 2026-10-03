@@ -9,7 +9,6 @@ import { Value } from "typebox/value";
 import initializeExtension from "../index.ts";
 
 const indexUrl = new URL("../index.ts", import.meta.url).href;
-const indexSrc = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
 const readmeSrc = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 
 function runRegistration(config) {
@@ -65,68 +64,62 @@ test("malformed config falls back during extension registration", () => {
 	const child = runRegistrationWithConfig("{");
 	assert.equal(child.status, 0, child.stderr);
 	const registered = JSON.parse(child.stdout);
-	assert.deepEqual(registered.tools.map(tool => tool.name), ["web_search", "source_check", "fetch_content", "get_search_content"]);
+	assert.deepEqual(registered.tools.map(tool => tool.name), ["web_search", "web_fetch"]);
 });
 
-test("search tools constrain numResults to integer values from 1 through 20", () => {
-	for (const name of ["web_search", "source_check"]) {
-		const schema = registeredTool({}, name).parameters.properties.numResults;
-		assert.equal(schema.type, "integer");
-		assert.equal(schema.minimum, 1);
-		assert.equal(schema.maximum, 20);
-		for (const value of [0, -1, 1.5, 21, Number.NaN, Number.POSITIVE_INFINITY]) {
-			assert.equal(Value.Check(schema, value), false, `${name} accepts ${value}`);
-		}
-		for (const value of [1, 5, 20]) {
-			assert.equal(Value.Check(schema, value), true, `${name} rejects ${value}`);
-		}
+test("web_search constrains numResults to integer values from 1 through 20", () => {
+	const schema = registeredTool({}, "web_search").parameters.properties.numResults;
+	assert.equal(schema.type, "integer");
+	assert.equal(schema.minimum, 1);
+	assert.equal(schema.maximum, 20);
+	for (const value of [0, -1, 1.5, 21, Number.NaN, Number.POSITIVE_INFINITY]) {
+		assert.equal(Value.Check(schema, value), false, `web_search accepts ${value}`);
+	}
+	for (const value of [1, 5, 20]) {
+		assert.equal(Value.Check(schema, value), true, `web_search rejects ${value}`);
 	}
 });
 
 test("tool registration gates support legacy and per-tool config", () => {
-	assert.deepEqual(registeredToolNames({ webSearch: { enabled: false } }), ["fetch_content", "get_search_content"]);
+	assert.deepEqual(registeredToolNames({ webSearch: { enabled: false } }), ["web_fetch"]);
 	assert.deepEqual(registeredToolNames({
 		webSearch: { enabled: false },
-		tools: { webSearch: { enabled: true }, sourceCheck: { enabled: true }, fetchContent: { enabled: false } },
-	}), ["web_search", "source_check", "get_search_content"]);
+		tools: { webSearch: { enabled: true }, fetchContent: { enabled: false } },
+	}), ["web_search"]);
 	assert.deepEqual(registeredToolNames({
-		tools: { sourceCheck: { enabled: false }, getSearchContent: { enabled: false } },
-	}), ["web_search", "fetch_content"]);
+		tools: { fetchContent: { enabled: false } },
+	}), ["web_search"]);
 });
 
-test("command registration gates default to enabled", () => {
-	assert.deepEqual(registeredCommandNames({}), ["websearch", "curator", "google-account", "search"]);
+test("command registration gates default to enabled and web-search-config is ungated", () => {
+	assert.deepEqual(registeredCommandNames({}), ["web-search-config", "web-search-auth", "web-search-history"]);
 	assert.deepEqual(registeredCommandNames({
-		commands: { websearch: { enabled: false }, search: { enabled: false } },
-	}), ["curator", "google-account"]);
+		commands: { curator: { enabled: false }, search: { enabled: false } },
+	}), ["web-search-config", "web-search-auth"]);
 });
 
-test("fetch_content schema exposes auth profile opt-in", () => {
-	const schema = registeredTool({}, "fetch_content").parameters.properties.auth;
-	assert.ok(schema);
-	assert.deepEqual(schema.anyOf.map(option => option.type), ["string", "boolean"]);
+test("web_fetch schema exposes only url, as, and refresh", () => {
+	const properties = registeredTool({}, "web_fetch").parameters.properties;
+	assert.deepEqual(Object.keys(properties).sort(), ["as", "refresh", "url"]);
+	assert.equal(properties.url.type, "string");
+	assert.equal(Value.Check(properties.as, "readable"), true);
+	assert.equal(Value.Check(properties.as, "raw"), true);
+	assert.equal(Value.Check(properties.as, "answer"), false);
+	assert.equal(properties.refresh.type, "boolean");
 });
 
 test("slim agent schemas omit provider, curator, and video controls", () => {
 	const searchTool = registeredTool({}, "web_search");
-	const sourceCheckTool = registeredTool({}, "source_check");
-	const fetchTool = registeredTool({}, "fetch_content");
+	const fetchTool = registeredTool({}, "web_fetch");
 
 	assert.equal(searchTool.parameters.properties.provider, undefined);
 	assert.equal(searchTool.parameters.properties.workflow, undefined);
-	assert.equal(sourceCheckTool.parameters.properties.provider, undefined);
-	for (const name of ["timestamp", "frames", "model"]) {
+	assert.equal(searchTool.parameters.properties.includeContent, undefined);
+	assert.doesNotMatch(`${searchTool.description}\n${searchTool.promptSnippet}`, /Gemini|Ollama|provider array|browser curator|automatic summary/i);
+	for (const name of ["timestamp", "frames", "model", "urls", "prompt", "mode", "answerModel", "auth", "proxy", "forceClone"]) {
 		assert.equal(fetchTool.parameters.properties[name], undefined);
 	}
-	assert.doesNotMatch(`${searchTool.description}\n${searchTool.promptSnippet}`, /Gemini|Ollama|provider array|browser curator/i);
 	assert.doesNotMatch(`${fetchTool.description}\n${fetchTool.promptSnippet}`, /YouTube|video|frames|Gemini/i);
-});
-
-test("registered tools do not advertise disabled get_search_content", () => {
-	const fetchTool = registeredTool({ tools: { getSearchContent: { enabled: false } } }, "fetch_content");
-	assert.ok(fetchTool);
-	assert.doesNotMatch(fetchTool.description, /get_search_content/);
-	assert.match(fetchTool.description, /retrieval tool is not registered/);
 });
 
 test("web activity shortcut renders through the supported string-array API", async () => {
@@ -157,15 +150,13 @@ test("web activity shortcut renders through the supported string-array API", asy
 });
 
 test("tool names can be configured without changing defaults", () => {
-	assert.deepEqual(registeredToolNames({}), ["web_search", "source_check", "fetch_content", "get_search_content"]);
+	assert.deepEqual(registeredToolNames({}), ["web_search", "web_fetch"]);
 	assert.deepEqual(registeredToolNames({
 		toolNames: {
 			webSearch: "research_web",
-			sourceCheck: "verify_sources",
 			fetchContent: "grab_content",
-			getSearchContent: "open_content",
 		},
-	}), ["research_web", "verify_sources", "grab_content", "open_content"]);
+	}), ["research_web", "grab_content"]);
 });
 
 test("tool name config rejects invalid and duplicate registered names", () => {
@@ -173,20 +164,14 @@ test("tool name config rejects invalid and duplicate registered names", () => {
 	assert.match(registrationError({ toolNames: { webSearch: "same_name", fetchContent: "same_name" } }), /duplicates/);
 });
 
-test("webSearch.enabled false registers only fetch tools and ignores disabled-name duplicates", () => {
+test("webSearch.enabled false registers only the fetch tool and ignores disabled-name duplicates", () => {
 	assert.deepEqual(registeredToolNames({
 		webSearch: { enabled: false },
 		toolNames: {
 			webSearch: "content_only",
-			sourceCheck: "content_only",
 			fetchContent: "grab_content",
-			getSearchContent: "open_content",
 		},
-	}), ["grab_content", "open_content"]);
-	assert.match(registrationError({
-		webSearch: { enabled: false },
-		toolNames: { fetchContent: "same_name", getSearchContent: "same_name" },
-	}), /duplicates/);
+	}), ["grab_content"]);
 });
 
 test("README documents registration gates and toolNames", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -61,11 +61,11 @@ test("web-search config path uses PI_CODING_AGENT_DIR before XDG_CONFIG_HOME", a
 	});
 });
 
-test("web-search config path uses XDG_CONFIG_HOME pi directory when agent dir is unset", async () => {
+test("web-search config path uses XDG_CONFIG_HOME pi/agent directory when agent dir is unset", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-web-access-xdg-config-"));
 	const xdgDir = join(root, "xdg");
-	await mkdir(join(xdgDir, "pi"), { recursive: true });
-	await writeFile(join(xdgDir, "pi", "web-search.json"), JSON.stringify({ geminiApiKey: "gemini-from-xdg" }) + "\n", "utf8");
+	await mkdir(join(xdgDir, "pi", "agent"), { recursive: true });
+	await writeFile(join(xdgDir, "pi", "agent", "web-search.json"), JSON.stringify({ geminiApiKey: "gemini-from-xdg" }) + "\n", "utf8");
 
 	const child = runChild(`
 		const { getWebSearchConfigDir, getWebSearchConfigPath } = await import(${JSON.stringify(utilsUrl)});
@@ -84,8 +84,8 @@ test("web-search config path uses XDG_CONFIG_HOME pi directory when agent dir is
 
 	assert.equal(child.status, 0, child.stderr);
 	assert.deepEqual(JSON.parse(child.stdout), {
-		dir: join(xdgDir, "pi"),
-		path: join(xdgDir, "pi", "web-search.json"),
+		dir: join(xdgDir, "pi", "agent"),
+		path: join(xdgDir, "pi", "agent", "web-search.json"),
 		available: true,
 	});
 });
@@ -133,13 +133,20 @@ test("Gemini base URL and Cloudflare auth use env before config", async () => {
 test("Gemini command source is lazy, overrides stale env, rotates, and uses header auth", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-web-access-gemini-command-"));
 	const agentDir = join(root, "agent-dir");
-	const commandPath = join(root, "read-key.sh");
+	const commandPath = join(root, "read-key.mjs");
 	const counterPath = join(root, "counter");
 	await mkdir(agentDir, { recursive: true });
-	await writeFile(commandPath, `#!/bin/sh\ncount=0\n[ ! -f "$1" ] || count=$(cat "$1")\ncount=$((count + 1))\nprintf '%s' "$count" >"$1"\nprintf 'synthetic-gemini-%s\\n' "$count"\n`, "utf8");
-	await chmod(commandPath, 0o700);
+	// A Node script instead of a `#!/bin/sh` one: credential commands run through
+	// the platform shell, and Windows has no shebang support.
+	await writeFile(commandPath, [
+		'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
+		"const file = process.argv[2];",
+		'const count = (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : 0) + 1;',
+		"writeFileSync(file, String(count));",
+		'process.stdout.write(`synthetic-gemini-${count}\\n`);',
+	].join("\n") + "\n", "utf8");
 	await writeFile(join(agentDir, "web-search.json"), JSON.stringify({
-		geminiApiKey: `!${commandPath} ${counterPath}`,
+		geminiApiKey: `!"${process.execPath}" "${commandPath}" "${counterPath}"`,
 	}) + "\n", "utf8");
 
 	const child = runChild(`
@@ -281,4 +288,49 @@ test("Gemini API requests include role and gateway auth headers", async () => {
 			{ text: "Describe" },
 		],
 	}]);
+});
+
+test("loadSsrfConfig reads ssrf.allowRanges and trustEnvProxy and rejects malformed values", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-web-access-ssrf-config-"));
+	const agentDir = join(root, "agent-dir");
+	const configPath = join(agentDir, "web-search.json");
+	const ssrfUrl = new URL("../ssrf-protection.ts", import.meta.url).href;
+	await mkdir(agentDir, { recursive: true });
+
+	// WEB_SEARCH_CONFIG_PATH is fixed at import time, so each case needs a fresh child.
+	const read = async (config) => {
+		await writeFile(configPath, JSON.stringify(config) + "\n", "utf8");
+		const child = runChild(`
+			const { loadSsrfConfig } = await import(${JSON.stringify(ssrfUrl)});
+			let value = null, message = null;
+			try { value = loadSsrfConfig(); } catch (error) { message = error.message; }
+			console.log(JSON.stringify({ value, message }));
+		`, {
+			PI_CODING_AGENT_DIR: agentDir,
+			XDG_CONFIG_HOME: undefined,
+			HOME: join(root, "home"),
+			USERPROFILE: join(root, "home"),
+		});
+		assert.equal(child.status, 0, child.stderr);
+		return JSON.parse(child.stdout);
+	};
+
+	assert.deepEqual((await read({})).value, { allowRanges: [], trustEnvProxy: true });
+	assert.deepEqual(
+		(await read({ ssrf: { allowRanges: ["198.18.0.0/15"], trustEnvProxy: false } })).value,
+		{ allowRanges: ["198.18.0.0/15"], trustEnvProxy: false },
+	);
+	assert.deepEqual((await read({ ssrf: { allowRanges: null } })).value, { allowRanges: [], trustEnvProxy: true });
+
+	// Malformed shapes must surface as errors instead of silently widening the guard.
+	for (const config of [
+		{ ssrf: [] },
+		{ ssrf: { allowRanges: "198.18.0.0/15" } },
+		{ ssrf: { allowRanges: [42] } },
+		{ ssrf: { trustEnvProxy: "yes" } },
+		{ ssrf: { allowRanges: ["0.0.0.0/0"] } },
+	]) {
+		const result = await read(config);
+		assert.match(result.message ?? "", /ssrf/, `expected an ssrf config error for ${JSON.stringify(config)}`);
+	}
 });

@@ -59,7 +59,7 @@ function runTool(agentDir, provider) {
 		const extension = (await import(${JSON.stringify(indexUrl)})).default;
 		extension(pi);
 		const tool = tools.find((candidate) => candidate.name === "web_search");
-		const params = { query: "provider precedence", workflow: "none" };
+		const params = { query: "provider precedence" };
 		if (${providerSource} !== undefined) params.provider = ${providerSource};
 		await tool.execute("provider-precedence-test", params, undefined, undefined, undefined);
 		console.log(JSON.stringify(calls));
@@ -133,7 +133,7 @@ test("configured explicit-only SerpBase fails instead of falling back", async ()
 		const extension = (await import(${JSON.stringify(indexUrl)})).default;
 		extension(pi);
 		const tool = tools.find((candidate) => candidate.name === "web_search");
-		const result = await tool.execute("serpbase-no-fallback-test", { query: "provider precedence", workflow: "none" });
+		const result = await tool.execute("serpbase-no-fallback-test", { query: "provider precedence" });
 		console.log(JSON.stringify(result));
 	`,
 		encoding: "utf8",
@@ -177,7 +177,7 @@ test("malformed config root fails with an explicit object-shape error", async ()
 			const extension = (await import(${JSON.stringify(indexUrl)})).default;
 			extension(pi);
 			const tool = tools.find((candidate) => candidate.name === "web_search");
-			await tool.execute("invalid-config-root-test", { query: "x", workflow: "none", provider: "auto" });
+			await tool.execute("invalid-config-root-test", { query: "x", provider: "auto" });
 		`,
 		encoding: "utf8",
 		env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, OPENAI_API_KEY: "openai-test-key" },
@@ -186,7 +186,7 @@ test("malformed config root fails with an explicit object-shape error", async ()
 	assert.match(child.stderr, /Invalid config in .*web-search\.json: expected a JSON object/);
 });
 
-test("non-curated search stops after caller cancellation", async () => {
+test("cancelled search stops after caller cancellation", async () => {
 	const agentDir = await createConfig(null);
 	const child = spawnSync(process.execPath, ["--input-type=module"], {
 		input: `
@@ -207,7 +207,7 @@ test("non-curated search stops after caller cancellation", async () => {
 			controller.abort();
 			let error = "";
 			try {
-				await tool.execute("cancel-test", { queries: ["first", "second"], provider: "anysearch", workflow: "none" }, controller.signal);
+				await tool.execute("cancel-test", { queries: ["first", "second"], provider: "anysearch" }, controller.signal);
 			} catch (err) {
 				error = String(err);
 			}
@@ -222,9 +222,9 @@ test("non-curated search stops after caller cancellation", async () => {
 	assert.match(output.error, /abort/i);
 });
 
-test("curated and non-curated branches both resolve the requested provider", async () => {
+test("search resolves the requested provider on the normal path", async () => {
 	const { readFile } = await import("node:fs/promises");
 	const source = await readFile(new URL("../index.ts", import.meta.url), "utf8");
-	assert.match(source, /if \(shouldCurate\) \{[\s\S]*?const requestedProvider = resolveRequestedProvider\(legacyParams\.provider\);[\s\S]*?const searchProvider = requestedProvider;/);
-	assert.match(source, /const resolvedProvider = resolveRequestedProvider\(legacyParams\.provider\);[\s\S]*?provider: resolvedProvider,/);
+	assert.match(source, /const resolvedProvider = resolveRequestedProvider\(legacyParams\.provider\);/);
+	assert.match(source, /provider: resolvedProvider,/);
 });

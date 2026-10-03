@@ -31,9 +31,9 @@ export interface SearchErrorDetails {
 	error?: string;
 	cancelled?: boolean;
 	cancelReason?: string;
-	/** Did the curator browser page ever establish a connection? */
+	/** Did the browser page ever establish a connection? */
 	browserConnected?: boolean;
-	/** Age (ms) of the last curator heartbeat at cancel time, if known. */
+	/** Age (ms) of the last browser heartbeat at cancel time, if known. */
 	lastHeartbeatAgeMs?: number | null;
 	/** Total queries the user requested. */
 	queryCount?: number;
@@ -75,18 +75,17 @@ export function buildSearchErrorPlan(details: SearchErrorDetails | undefined | n
 	const errored = queries.filter(q => q.error).length;
 
 	// Rich diagnostics only make sense when there is something to diagnose: a
-	// cancelled/curator result with partial data, OR a non-cancel error that carries
-	// extra detail (urls/response-id for fetch_content, the failed query for
-	// get_search_content). A bare argument error (e.g. "No URL
-	// provided") stays a clean single line -- no noise.
+	// cancelled result with partial data, OR a non-cancel error that carries
+	// extra detail (urls/response-id for web_fetch). A bare argument error (e.g.
+	// "No URL provided") stays a clean single line -- no noise.
 	const extras = details.extraLines ?? [];
 	const rich = details.cancelled === true || queries.length > 0 || extras.length > 0;
 	if (!rich) {
 		return { expanded: [headline], collapsed: [], expandHint: null };
 	}
 
-	// --- diagnostics block (expanded): curator/cancel-specific only. For non-cancel
-	// errors (fetch_content/get_search_content) there is no browser or
+	// --- diagnostics block (expanded): cancel-specific only. For non-cancel
+	// errors (web_fetch) there is no browser or
 	// query-curation state to report, so we skip this block and show only Details. ---
 	const expanded: string[] = [headline, ""];
 

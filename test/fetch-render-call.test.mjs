@@ -12,7 +12,7 @@ function getFetchTool() {
 		on() {},
 		appendEntry() {},
 	});
-	return tools.find(tool => tool.name === "fetch_content");
+	return tools.find(tool => tool.name === "web_fetch");
 }
 
 const theme = {
@@ -20,15 +20,18 @@ const theme = {
 	fg: (_name, text) => text,
 };
 
-test("fetch_content renderCall falls back to url when urls is empty", () => {
+test("web_fetch renderCall shows the url and optional overrides", () => {
 	const tool = getFetchTool();
+	assert.ok(tool, "web_fetch tool was not registered");
+
 	const lines = tool.renderCall({
 		url: "https://example.com/docs",
-		urls: [],
-		frames: 1,
-		prompt: "",
-		model: "",
+		as: "readable",
+		refresh: false,
 	}, theme).render(120).map(line => line.trimEnd());
-
 	assert.deepEqual(lines, ["fetch https://example.com/docs"]);
+
+	const raw = tool.renderCall({ url: "https://example.com/docs", as: "raw", refresh: true }, theme)
+		.render(120).map(line => line.trimEnd());
+	assert.deepEqual(raw, ["fetch https://example.com/docs", "  as: raw", "  refresh: true"]);
 });

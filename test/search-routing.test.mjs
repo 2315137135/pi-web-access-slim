@@ -560,24 +560,3 @@ test("useCurrentModel is strictly validated", async () => {
 	assert.match(output.error, /searchRouting\.useCurrentModel .*boolean/);
 });
 
-test("Curator auto default follows the same current-model Hosted Search eligibility", async () => {
-	const home = await createConfig({
-		searchRouting: { providers: ["openai", "tavily"], useCurrentModel: true, fallbackOn: ["unsupported", "network"] },
-	});
-	const child = runChild(`
-		const { resolveCuratorDefaultProvider } = await import(${JSON.stringify(indexModuleUrl)});
-		const available = {
-			all: true, openai: true, brave: false, parallel: false, "parallel-mcp": false, tinyfish: false,
-			search1api: false, searchinfinity: false, querit: false, tavily: true, firecrawl: false,
-			jina: false, serpdive: false, searxng: false, duckduckgo: false, perplexity: false,
-			exa: false, gemini: false, kagi: false, bocha: false, ollama: false, anysearch: false,
-			xai: false, brightdata: false, serpbase: false, serper: false, valyu: false,
-		};
-		const official = { model: { provider: "openai", api: "openai-responses", id: "gpt-5.6", baseUrl: "https://api.openai.com/v1" } };
-		const proxy = { model: { provider: "openai", api: "openai-responses", id: "gpt-5.6-sol", baseUrl: "https://ai.feei.cn/v1" } };
-		console.log(JSON.stringify({ official: resolveCuratorDefaultProvider("auto", available, official), proxy: resolveCuratorDefaultProvider("auto", available, proxy) }));
-	`, { PI_CODING_AGENT_DIR: home });
-
-	assert.equal(child.status, 0, child.stderr);
-	assert.deepEqual(JSON.parse(child.stdout.trim()), { official: "openai", proxy: "tavily" });
-});
